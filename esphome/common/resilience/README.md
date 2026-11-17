@@ -51,10 +51,123 @@ platforms.
 | `resilience_ntp_server_1` … `_3` | `pool.ntp.org`, `time.cloudflare.com`, `162.159.200.1` | Three is the maximum. Keep one as a raw IP. |
 | `resilience_clock_synced_name`, `resilience_device_time_name` | English | Entity names |
 
-**Picking the reboot timeout.** Longer than your longest HA outage, short
-enough to recover a wedged network stack. `2h` outlasted every outage seen
-on the device it came from (longest: 92 min). A device whose RAM state
-matters a lot (counters, a fallback mode) can go to `24h`.
+How each default was chosen, and when to change it, is in
+[Why these numbers](#why-these-numbers).
+
+## Why these numbers
+
+Every timeout here is a trade between two failures: giving up too early
+(rebooting, taking over, falling back while things would have recovered on
+their own) and waiting too long (staying stuck, or leaving the job undone).
+Each number below says which way it leans and why. Defaults quoted are
+ESPHome 2026.10.
+
+### API reboot timeout: 2h (ESPHome default: 15min)
+
+**What it does.** If no Home Assistant client has been connected for this
+long, the device reboots. It's meant to recover a device whose network stack
+has wedged: connected to Wi-Fi but unreachable.
+
+**Why not 15 minutes.** The device can't tell "my network stack is stuck"
+from "Home Assistant is down". An HA update, a host reboot, a database
+migration or a backup can each keep HA away for longer than 15 minutes, and
+every one of them then reboots every ESPHome device in the house, repeatedly,
+every 15 minutes until HA returns. That fixes nothing, since the problem was
+never on the device, and each reboot:
+
+- clicks relays and blinks lights (outputs reset during boot),
+- wipes anything kept in RAM (counters, "running blind" state, the
+  minutes-without-HA counter itself),
+- and, on devices that restore from flash, hides that anything happened.
+
+**Why 2 hours.** It has to outlast real HA outages, and still recover a
+truly stuck device the same day. On the device this came from, the longest
+HA outage seen was 92 minutes, so 2h clears it with margin. Pick your own
+from your history: longer than your longest outage.
+
+**When to go longer.** If the device keeps state in RAM that matters (a
+runtime counter, a fallback mode), a reboot costs more, so lean longer:
+the pool controller uses `24h`.
+
+**When to go shorter or disable.** `0s` disables it, which is fine for a
+device that doesn't use the API at all (MQTT only). Going below 15min only
+makes sense if HA is never down for long and a stuck device is costly.
+
+### Wi-Fi reboot timeout: 15min (ESPHome default, kept)
+
+**What it does.** If Wi-Fi has been disconnected this long, the device
+reboots, which resets the radio from scratch.
+
+**Why keep the default.** Unlike the API case, losing Wi-Fi *can* be the
+device's own fault (a radio that stopped retrying), and a reboot can fix it.
+15 minutes is longer than a typical router or access point reboot (a few
+minutes), so the usual "router restarted" case recovers without a device
+reboot, and a genuinely stuck radio still gets reset. It's written out
+explicitly so nobody mistakes it for a forgotten setting.
+
+Going longer is reasonable for a device far from the access point that
+drops often; going shorter mostly adds reboots during router updates.
+
+### Fallback hotspot: after 90s (ESPHome default)
+
+If the device hasn't joined Wi-Fi within 90 seconds, it opens its own
+hotspot (named after the device) alongside retrying. 90 seconds covers a
+normal connect; anything longer means something is wrong and you may need
+to reach the device directly, for example to give it new Wi-Fi details.
+The package doesn't change this; set `wifi: ap_timeout:` yourself if you
+need to.
+
+### Taking over from HA: after 10 minutes
+
+The snippet in [Taking over from HA](#taking-over-from-ha) waits for
+`resilience_ha_down_minutes == 10`. Shorter, and an ordinary HA restart
+(usually one to three minutes) would make the device grab control from an
+HA that's about to come back. Longer, and the job sits undone while nobody
+is in charge. Ten minutes covers restarts and still acts well within an
+hour. Pick it from what an idle hour costs your device: for a pool, ten
+minutes without filtration is nothing.
+
+### Running blind: 10-minute grace, 8-hour cycles
+
+**Grace.** After a power cut, the device waits 10 minutes for a clock
+before running blind. A normal boot gets Wi-Fi and NTP in well under a
+minute, but after a power cut the router and modem are booting too, and
+they can take several minutes. Ten minutes rides that out, so a power cut
+alone doesn't trigger blind mode.
+
+**Cycle.** The daily total is split into three 8-hour cycles, rather than
+one block per 24 hours. If the device runs blind for only part of a day, it
+has still delivered a share of the total, and the pump is never off for
+more than about 8 hours in a row.
+
+### Saving to flash: every 10 minutes of runtime
+
+ESPHome batches flash writes and commits at most once a minute
+(`preferences: flash_write_interval: 60s`). So a value that changes every
+minute, like a runtime counter, is written to flash every minute: 1,440
+writes a day. Flash cells survive a limited number of erase cycles (around
+100,000 is a common rating), and on an ESP8266 the saved settings live in a
+small area that is rewritten each time, so per-minute writes can wear it out
+within months. ESP32 spreads writes out (wear levelling), which helps but
+doesn't make it free.
+
+The pool's answer: keep the live counter in RAM and save a copy every 10
+minutes of pump runtime. That's about 39 writes a day while running and none
+while idle, and a reboot loses at most 9 minutes of counting.
+
+### Three NTP servers, one by IP
+
+ESPHome's SNTP accepts at most three servers. Using all three means one
+provider being down doesn't matter. Making one of them a raw IP means a
+broken DNS server doesn't matter either: the device can still get time even
+when it can't look up a name. The default IP is `time.cloudflare.com`'s.
+
+### Button debounce: 50ms
+
+The button snippet ignores presses shorter than 50 ms. Mechanical contacts
+bounce for a few milliseconds when pressed, which would otherwise register
+as several presses and toggle the relay on, off, on. 50 ms is far longer
+than the bounce and far shorter than a deliberate press.
 
 ## The use case: a pool pump
 
