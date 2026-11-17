@@ -24,7 +24,7 @@ packages:
   diagnostics:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/diagnostics/diagnostics.yaml]
+    files: [esphome/common/diagnostics/diagnostics.yaml]
     refresh: 1d
 ```
 

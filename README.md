@@ -7,12 +7,13 @@ Each one is self-contained: take the one you need, nothing else comes with it.
 
 | Package | For | What it adds |
 |---|---|---|
-| [`midea-uart`](esphome/midea-uart/) | Midea-protocol ACs over UART (SLWF-01Pro and similar) | LED button with real state, LED off at power-on, Turbo/Eco switches, Clean button |
-| [`xiaomi-bslamp2`](esphome/xiaomi-bslamp2/) | Xiaomi Mijia Bedside Lamp 2 (MJCTD02YL) | On-device sunrise, alert/warning pulses, five scene effects, gentler defaults |
-| [`resilience`](esphome/resilience/) | Any ESP8266/ESP32 device that must keep working without HA, Wi-Fi or power | Two clock sources, sane reboot timeouts, fallback hotspot, "clock synced" and "minutes without HA" signals. The README is a guide built around a pool pump controller. |
-| [`diagnostics`](esphome/diagnostics/) | Any ESP8266/ESP32 device | Last boot, reset reason, ESPHome version, Wi-Fi signal, status |
+| [`midea-uart`](esphome/devices/midea-uart/) | Midea-protocol ACs over UART (SLWF-01Pro and similar) | LED button with real state, LED off at power-on, Turbo/Eco switches, Clean button |
+| [`xiaomi-bslamp2`](esphome/devices/xiaomi-bslamp2/) | Xiaomi Mijia Bedside Lamp 2 (MJCTD02YL) | On-device sunrise, alert/warning pulses, five scene effects, gentler defaults |
+| [`resilience`](esphome/common/resilience/) | Any ESP8266/ESP32 device that must keep working without HA, Wi-Fi or power | Two clock sources, sane reboot timeouts, fallback hotspot, "clock synced" and "minutes without HA" signals. The README is a guide built around a pool pump controller. |
+| [`diagnostics`](esphome/common/diagnostics/) | Any ESP8266/ESP32 device | Last boot, reset reason, ESPHome version, Wi-Fi signal, status |
 
-Each package lives in `esphome/<device>/` with the package itself, an
+Each package lives in `esphome/devices/<device>/` (needs that hardware) or
+`esphome/common/<name>/` (goes on any device), with the package itself, an
 `example.yaml` and a README. Include it from your own config:
 
 ```yaml
@@ -20,7 +21,7 @@ packages:
   midea:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/midea-uart/midea-uart.yaml]
+    files: [esphome/devices/midea-uart/midea-uart.yaml]
     refresh: 1d
 ```
 
@@ -59,5 +60,5 @@ package's README has a Credits section saying exactly what came from where.
 
 [MIT](LICENSE), except where a folder has its own `LICENSE`:
 
-- [`esphome/midea-uart`](esphome/midea-uart/) is **GPL-3.0**, because it
+- [`esphome/devices/midea-uart`](esphome/devices/midea-uart/) is **GPL-3.0**, because it
   derives from SMLIGHT's GPL-3.0 config.

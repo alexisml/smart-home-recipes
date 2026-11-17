@@ -32,7 +32,7 @@
 # Several lamps: one copy of this file per lamp, each with its own `name`
 # and `friendly_name`.
 #
-# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/xiaomi-bslamp2
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/devices/xiaomi-bslamp2
 # ==========================================================================
 
 substitutions:
@@ -75,5 +75,5 @@ packages:
   bslamp2:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/xiaomi-bslamp2/xiaomi-bslamp2.yaml]
+    files: [esphome/devices/xiaomi-bslamp2/xiaomi-bslamp2.yaml]
     refresh: 1d   # check GitHub for fixes once a day

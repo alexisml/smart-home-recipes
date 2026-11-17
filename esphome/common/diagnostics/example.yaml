@@ -15,7 +15,7 @@
 # Home Assistant then shows six new diagnostic entities on the device's page:
 # Last boot, Reset reason, ESPHome version, WiFi signal (dBm and %), Status.
 #
-# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/diagnostics
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/common/diagnostics
 # ==========================================================================
 
 substitutions:
@@ -51,5 +51,5 @@ packages:
   diagnostics:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/diagnostics/diagnostics.yaml]
+    files: [esphome/common/diagnostics/diagnostics.yaml]
     refresh: 1d

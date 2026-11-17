@@ -19,7 +19,7 @@
 #    across power cuts, a web UI usable while HA is down).
 # 6. INSTALL -> Wirelessly.
 #
-# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/resilience
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/common/resilience
 # ==========================================================================
 
 substitutions:
@@ -28,7 +28,7 @@ substitutions:
 
   # REQUIRED. IANA timezone name:
   # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-  resilience_timezone: Europe/Madrid
+  resilience_timezone: America/Montevideo
   # REQUIRED. Password of the fallback hotspot.
   resilience_ap_password: !secret wifi_password
 
@@ -57,5 +57,5 @@ packages:
   resilience:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/resilience/resilience.yaml]
+    files: [esphome/common/resilience/resilience.yaml]
     refresh: 1d

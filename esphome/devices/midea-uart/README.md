@@ -39,7 +39,7 @@ packages:
   midea:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/midea-uart/midea-uart.yaml]
+    files: [esphome/devices/midea-uart/midea-uart.yaml]
     refresh: 1d
 ```
 

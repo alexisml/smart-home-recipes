@@ -33,7 +33,7 @@ packages:
   bslamp2:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/xiaomi-bslamp2/xiaomi-bslamp2.yaml]
+    files: [esphome/devices/xiaomi-bslamp2/xiaomi-bslamp2.yaml]
     refresh: 1d
 ```
 

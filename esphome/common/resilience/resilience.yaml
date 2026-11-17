@@ -10,7 +10,7 @@
 # cost RAM, so they're in README.md as snippets instead of in here.
 #
 # REQUIRED in your config's substitutions:
-#   resilience_timezone      e.g. "Europe/Madrid", "America/New_York"
+#   resilience_timezone      e.g. "America/Montevideo"
 #   resilience_ap_password   e.g. !secret wifi_password
 # --------------------------------------------------------------------------
 

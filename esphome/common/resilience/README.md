@@ -26,14 +26,14 @@ Add to your device's existing config (see [`example.yaml`](example.yaml)):
 
 ```yaml
 substitutions:
-  resilience_timezone: Europe/Madrid            # required
+  resilience_timezone: America/Montevideo            # required
   resilience_ap_password: !secret wifi_password # required
 
 packages:
   resilience:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
-    files: [esphome/resilience/resilience.yaml]
+    files: [esphome/common/resilience/resilience.yaml]
     refresh: 1d
 ```
 
@@ -44,7 +44,7 @@ platforms.
 
 | Substitution | Default | What |
 |---|---|---|
-| `resilience_timezone` | *required* | IANA name, e.g. `America/New_York` |
+| `resilience_timezone` | *required* | IANA name, e.g. `America/Montevideo` |
 | `resilience_ap_password` | *required* | Fallback hotspot password |
 | `resilience_api_reboot_timeout` | `2h` | Reboot after this long without HA. `0s` disables. |
 | `resilience_wifi_reboot_timeout` | `15min` | Reboot after this long without Wi-Fi (ESPHome's default) |
