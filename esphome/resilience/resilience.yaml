@@ -1,0 +1,109 @@
+# --------------------------------------------------------------------------
+# Resilience
+#
+# Keeps a device useful when Home Assistant, Wi-Fi, the internet or the
+# power goes away: two independent clock sources, no pointless reboots
+# during HA outages, a fallback hotspot to reach it when Wi-Fi is gone, and
+# two signals your own logic can act on (clock synced, minutes without HA).
+#
+# Works on ESP8266 and ESP32. Some resilience settings are board-specific or
+# cost RAM, so they're in README.md as snippets instead of in here.
+#
+# REQUIRED in your config's substitutions:
+#   resilience_timezone      e.g. "Europe/Madrid", "America/New_York"
+#   resilience_ap_password   e.g. !secret wifi_password
+# --------------------------------------------------------------------------
+
+substitutions:
+  # How long without Home Assistant before the device reboots itself.
+  # ESPHome's default, 15min, reboots it every 15 minutes of every HA outage
+  # (HA updates, host reboots), which fixes nothing and resets anything kept
+  # in RAM. Long enough to outlast an outage, short enough to recover a wedged
+  # network stack. "0s" disables it.
+  resilience_api_reboot_timeout: 2h
+  # Same for Wi-Fi. 15min is ESPHome's default, kept explicit.
+  resilience_wifi_reboot_timeout: 15min
+
+  # Three NTP servers (lwIP's maximum). One is a raw IP, so time still syncs
+  # when DNS is down.
+  resilience_ntp_server_1: pool.ntp.org
+  resilience_ntp_server_2: time.cloudflare.com
+  resilience_ntp_server_3: 162.159.200.1   # time.cloudflare.com, by IP
+
+  resilience_clock_synced_name: Clock synced
+  resilience_device_time_name: Device time
+
+wifi:
+  reboot_timeout: ${resilience_wifi_reboot_timeout}
+  # Fallback hotspot: if the device can't join your Wi-Fi it opens its own,
+  # named after the device. Connect to it and pick a network from the page
+  # that opens (captive_portal below).
+  ap:
+    password: ${resilience_ap_password}
+
+captive_portal:
+
+api:
+  reboot_timeout: ${resilience_api_reboot_timeout}
+
+# Two clock sources writing the same system clock. Whichever syncs first
+# wins, then both keep it fresh: HA up + internet down -> HA supplies the
+# time; HA down + internet up -> NTP does. With both gone the clock keeps
+# running off the chip's timer from the last sync (drift: seconds per day).
+# Only a power cut with no network on return leaves it without time; see
+# README.md for that case.
+time:
+  - platform: sntp
+    id: resilience_time
+    timezone: ${resilience_timezone}
+    servers:
+      - ${resilience_ntp_server_1}
+      - ${resilience_ntp_server_2}
+      - ${resilience_ntp_server_3}
+  - platform: homeassistant
+    id: resilience_ha_time
+    timezone: ${resilience_timezone}
+
+globals:
+  # Consecutive minutes without a Home Assistant connection. 0 while
+  # connected. Read it from your own lambdas to take over when HA is gone:
+  #   if (id(resilience_ha_down_minutes) == 10) { ... }   // fires once
+  - id: resilience_ha_down_minutes
+    type: int
+    initial_value: "0"
+
+interval:
+  # Counts minutes, so 1 tick == 1 minute. Don't change the interval: code
+  # comparing the counter to a number of minutes would silently be wrong.
+  - interval: 1min
+    then:
+      - if:
+          condition:
+            api.connected:
+          then:
+            - lambda: "id(resilience_ha_down_minutes) = 0;"
+          else:
+            - lambda: "id(resilience_ha_down_minutes) += 1;"
+
+binary_sensor:
+  # Whether the device knows the real time. Off after a power cut with no
+  # network on return, until a clock source syncs. Anything that acts at a
+  # time of day should check this before trusting the clock.
+  - platform: template
+    id: resilience_clock_synced
+    name: ${resilience_clock_synced_name}
+    entity_category: diagnostic
+    lambda: return id(resilience_time).now().is_valid();
+
+text_sensor:
+  # The device's own idea of the time, to spot a wrong timezone or a clock
+  # that never synced.
+  - platform: template
+    id: resilience_device_time
+    name: ${resilience_device_time_name}
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      auto t = id(resilience_time).now();
+      if (!t.is_valid()) return {"not synced"};
+      return {t.strftime("%Y-%m-%d %H:%M")};
