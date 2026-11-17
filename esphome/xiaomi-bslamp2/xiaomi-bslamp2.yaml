@@ -1,0 +1,547 @@
+# --------------------------------------------------------------------------
+# Xiaomi Mijia Bedside Lamp 2 (MJCTD02YL / Yeelight bslamp2) extras
+#
+# Built on mmakaay/esphome-xiaomi_bslamp2
+# (github.com/mmakaay/esphome-xiaomi_bslamp2, by Maurice Makaay), which provides the hardware
+# component and the default behaviour. This package pulls those in and adds:
+# an on-device sunrise, alert/warning pulse buttons, five scene effects,
+# slower transitions and warm-white defaults.
+#
+# Your own config provides `name`, `friendly_name`, wifi and ota. See
+# example.yaml and README.md.
+# --------------------------------------------------------------------------
+
+substitutions:
+  # ---- Features: true = present, false = hidden from HA and inert --------
+  # Unquoted true/false only. "false" or anything else fails validation.
+  bslamp2_sunrise: true          # Sunrise button + its two settings
+  bslamp2_alerts: true           # Alert (red) and Warning (amber) buttons
+
+  # ---- Defaults -----------------------------------------------------------
+  # Every toggle and dim (front panel and HA). Upstream ships 800ms.
+  default_transition_length: 1500ms
+  # What the lamp does after a power cut. RESTORE_DEFAULT_OFF brings back the
+  # last colour and on/off state; RESTORE_AND_OFF always comes back off.
+  bslamp2_restore_mode: RESTORE_DEFAULT_OFF
+  # Sunrise settings until changed from HA (kept over reboots after that).
+  bslamp2_sunrise_duration_min: "4.5"     # minutes, 1-60
+  bslamp2_sunrise_max_brightness_pct: "40" # %, 5-100
+
+  # ---- Entity and effect names --------------------------------------------
+  bslamp2_sunrise_name: Sunrise
+  bslamp2_sunrise_duration_name: Sunrise duration
+  bslamp2_sunrise_max_brightness_name: Sunrise max brightness
+  bslamp2_alert_name: Alert
+  bslamp2_warning_name: Warning
+  bslamp2_effect_candlelight_name: Candlelight
+  bslamp2_effect_rgb_fade_name: RGB fade
+  bslamp2_effect_movie_night_name: Movie night
+  bslamp2_effect_fireplace_name: Fireplace
+  bslamp2_effect_velvet_name: Velvet
+
+# --------------------------------------------------------------------------
+# Upstream component + behaviour packages
+# --------------------------------------------------------------------------
+
+packages:
+  bslamp2_upstream:
+    url: https://github.com/mmakaay/esphome-xiaomi_bslamp2
+    ref: release/2026.10.0
+    files:
+      - packages/core.yaml
+      - packages/behavior_default.yaml
+      - packages/ota_feedback.yaml
+      - packages/activate_preset_svc.yaml
+    refresh: 1d
+
+# Makes the fallback AP useful: if the lamp can't join the WiFi, it serves a
+# page for picking a network instead of just sitting there.
+captive_portal:
+
+# `!extend` edits the light upstream's behavior_default.yaml defines, instead
+# of declaring a second one. Lists (like effects) are appended, so upstream's
+# own effects stay available.
+light:
+  - id: !extend my_light
+
+    # Colour, colour temperature and brightness are saved on every change
+    # and read back at boot, so the last setting survives a power cut.
+    restore_mode: ${bslamp2_restore_mode}
+
+    # Used only when nothing is saved yet (first boot after a flash): warm
+    # white at 50%.
+    initial_state:
+      state: true
+      color_mode: COLOR_TEMPERATURE
+      color_temperature: 350 mireds
+      brightness: 50%
+
+    # Scenes, in the light's effect dropdown in Home Assistant. They run with
+    # publish + save disabled, so a scene never overwrites the saved colour
+    # and doesn't flood HA with state updates.
+    effects:
+      # Candlelight: warmest white, low, with a slow irregular wobble.
+      - lambda:
+          name: ${bslamp2_effect_candlelight_name}
+          update_interval: 400ms
+          lambda: |-
+            float level = 0.07f + random_float() * 0.04f;
+            auto call = it.make_call();
+            // Without an explicit colour mode the call inherits whatever the
+            // lamp is in, and a colour temperature set while in RGB mode is
+            // silently dropped.
+            call.set_color_mode(light::ColorMode::COLOR_TEMPERATURE);
+            call.set_color_temperature(588.0f);
+            call.set_brightness(level);
+            call.set_transition_length(400);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+
+      # Full saturation hue cycle, 15 degrees every 5s -> 2 min per lap.
+      # Brightness is left alone, so it fades at whatever level you set.
+      - lambda:
+          name: ${bslamp2_effect_rgb_fade_name}
+          update_interval: 5s
+          lambda: |-
+            static int hue = 0;
+            hue = (hue + 15) % 360;
+            float r, g, b;
+            hsv_to_rgb(hue, 1.0f, 1.0f, r, g, b);
+            auto call = it.make_call();
+            // Explicit, otherwise the RGB values are dropped whenever the
+            // lamp happens to be in white mode.
+            call.set_color_mode(light::ColorMode::RGB);
+            call.set_rgb(r, g, b);
+            call.set_transition_length(5000);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+
+      # Static dim amber: enough to find the remote, dark enough to ignore.
+      - lambda:
+          name: ${bslamp2_effect_movie_night_name}
+          update_interval: 60s
+          lambda: |-
+            if (!initial_run) return;
+            auto call = it.make_call();
+            call.set_color_mode(light::ColorMode::COLOR_TEMPERATURE);
+            call.set_color_temperature(500.0f);
+            call.set_brightness(0.10f);
+            call.set_transition_length(3000);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+
+      # Fireplace: a random walk over brightness and over the green channel
+      # (0.0 = red, ~0.3 = amber), so the flicker wanders instead of
+      # strobing, with the occasional flare. Green stays low because this
+      # lamp renders nominal yellow as green.
+      - lambda:
+          name: ${bslamp2_effect_fireplace_name}
+          update_interval: 150ms
+          lambda: |-
+            static float level = 0.30f;
+            static float warmth = 0.22f;
+            if (initial_run) {
+              level = 0.30f;
+              warmth = 0.22f;
+            }
+            level += (random_float() - 0.5f) * 0.18f;
+            level = clamp(level, 0.12f, 0.45f);
+            warmth += (random_float() - 0.5f) * 0.10f;
+            warmth = clamp(warmth, 0.05f, 0.35f);
+            float b = random_float() < 0.06f ? level * 1.5f : level;
+            auto call = it.make_call();
+            call.set_color_mode(light::ColorMode::RGB);
+            call.set_rgb(1.0f, warmth, 0.0f);
+            call.set_brightness(b > 0.60f ? 0.60f : b);
+            call.set_transition_length(150);
+            call.set_publish(false);
+            call.set_save(false);
+            call.perform();
+
+      # Velvet: low, saturated colour drifting inside the purple -> magenta ->
+      # pink band, and every so often one slow breath down to off and back.
+      #
+      # Hue is swept at saturation 1.0 rather than crossfading between RGB
+      # triplets: interpolating between two triplets passes through the
+      # lamp's desaturated centre and the colour washes out to white.
+      - lambda:
+          name: ${bslamp2_effect_velvet_name}
+          update_interval: 1s
+          lambda: |-
+            static uint32_t started = 0;
+            static uint32_t next_dip = 0;
+            static uint32_t phase_until = 0;
+            static uint8_t phase = 0;   // 0 steady, 1 fading down, 2 dark, 3 fading up
+            const float base = 0.18f;
+
+            uint32_t now = millis();
+            if (initial_run) {
+              started = now;
+              phase = 0;
+              next_dip = now + 40000;
+            }
+
+            // Hue ping-pongs across the band over ~2 minutes. Slow enough
+            // that the turn at either end does not read as a direction change.
+            float t = (now - started) / 1000.0f;
+            float tri = 0.5f - 0.5f * cosf(t / 120.0f * 2.0f * M_PI);
+            int hue = (int) (265.0f + 85.0f * tri);
+            float r, g, b;
+            hsv_to_rgb(hue, 1.0f, 1.0f, r, g, b);
+
+            auto send = [&](float brightness, uint32_t transition) {
+              auto call = it.make_call();
+              call.set_color_mode(light::ColorMode::RGB);
+              call.set_rgb(r, g, b);
+              call.set_brightness(brightness);
+              call.set_transition_length(transition);
+              call.set_publish(false);
+              call.set_save(false);
+              call.perform();
+            };
+
+            if (phase == 0 && now >= next_dip) {
+              phase = 1;
+              phase_until = now + 7000;
+              send(0.0f, 7000);
+              return;
+            }
+            if (phase == 1) {
+              if (now >= phase_until) {          // hold in the dark
+                phase = 2;
+                phase_until = now + 2000;
+              }
+              return;
+            }
+            if (phase == 2) {
+              if (now >= phase_until) {
+                phase = 3;
+                phase_until = now + 7000;
+                send(base, 7000);
+              }
+              return;
+            }
+            if (phase == 3) {
+              if (now >= phase_until) {
+                phase = 0;
+                next_dip = now + 35000 + (uint32_t) (random_float() * 25000.0f);
+              }
+              return;
+            }
+
+            // Steady, with a wander small enough to be felt rather than seen.
+            send(base + (random_float() - 0.5f) * 0.03f, 1000);
+
+    # Turning the lamp off (front panel, HA, anything) cancels a running
+    # sunrise, so it can't grab the lamp back a few minutes later. The
+    # pre-sunrise state is kept: the next turn-on restores it.
+    on_turn_off:
+      - globals.set:
+          id: bslamp2_sunrise_active
+          value: "false"
+
+    # After an interrupted sunrise, the next turn-on goes back to the state
+    # the lamp had before the sunrise, not to the level the ramp reached.
+    # Skipped while a sunrise is running, otherwise the sunrise's own ember
+    # would immediately undo itself. Inert when the sunrise is disabled.
+    on_turn_on:
+      - if:
+          condition:
+            lambda: return !id(bslamp2_sunrise_active) && id(bslamp2_sunrise_prev_valid);
+          then:
+            - lambda: |-
+                id(bslamp2_sunrise_prev_valid) = false;
+                auto call = id(my_light).make_call();
+                if (id(bslamp2_sunrise_prev_is_rgb)) {
+                  call.set_color_mode(light::ColorMode::RGB);
+                  call.set_rgb(id(bslamp2_sunrise_prev_red), id(bslamp2_sunrise_prev_green), id(bslamp2_sunrise_prev_blue));
+                } else {
+                  call.set_color_mode(light::ColorMode::COLOR_TEMPERATURE);
+                  call.set_color_temperature(id(bslamp2_sunrise_prev_ct));
+                }
+                call.set_brightness(id(bslamp2_sunrise_prev_brightness));
+                call.set_transition_length(0);
+                call.perform();
+
+# Sunrise bookkeeping. None of it is restored on boot.
+globals:
+  - id: bslamp2_sunrise_active
+    type: bool
+    initial_value: "false"
+  - id: bslamp2_sunrise_step
+    type: int
+    initial_value: "0"
+
+  # The light state from just before a sunrise started. If the sunrise is
+  # interrupted, the next turn-on puts the lamp back to this instead of to
+  # whatever brightness the ramp had reached.
+  - id: bslamp2_sunrise_prev_valid
+    type: bool
+    initial_value: "false"
+  - id: bslamp2_sunrise_prev_is_rgb
+    type: bool
+    initial_value: "false"
+  - id: bslamp2_sunrise_prev_brightness
+    type: float
+    initial_value: "0.5"
+  - id: bslamp2_sunrise_prev_ct
+    type: float
+    initial_value: "350"
+  - id: bslamp2_sunrise_prev_red
+    type: float
+    initial_value: "1"
+  - id: bslamp2_sunrise_prev_green
+    type: float
+    initial_value: "1"
+  - id: bslamp2_sunrise_prev_blue
+    type: float
+    initial_value: "1"
+
+script:
+  # Pulse the lamp in a given colour, then return to whatever it was doing.
+  #
+  # "disco" actions drive the LEDs directly: they don't publish the state to
+  # Home Assistant and don't write it to flash, so a notification never
+  # overwrites the saved colour. light.disco_off restores the saved state.
+  #
+  # Shape, tuned by watching the lamp: a short dark lead-in so the first pulse
+  # reads as a pulse and not as a continuation of what was on, then four
+  # fade up / hold / fade down cycles, then a short tail.
+  - id: bslamp2_flash_notify
+    mode: restart
+    parameters:
+      red: float
+      green: float
+      blue: float
+    then:
+      # Dark lead-in. brightness 0% lands in the lamp's "off" colour handler.
+      - light.disco_on:
+          id: my_light
+          transition_length: 0s
+          brightness: 0%
+      - delay: 150ms
+
+      - repeat:
+          count: 4
+          then:
+            - light.disco_on:
+                id: my_light
+                transition_length: 400ms
+                brightness: 100%
+                red: !lambda return red;
+                green: !lambda return green;
+                blue: !lambda return blue;
+            - delay: 500ms          # 400ms fade + 100ms held at full
+            - light.disco_on:
+                id: my_light
+                transition_length: 400ms
+                brightness: 0%
+            - delay: 400ms
+
+      - delay: 150ms
+      - light.disco_off:
+          id: my_light
+
+  # Sunrise. Measured against the real lamp, not guessed. The hardware has
+  # two hard constraints:
+  #
+  #   * Below brightness 0.012 the lamp switches to night light mode, which
+  #     is the only way to emit less light than ~2%. It is barely visible,
+  #     which makes it the perfect ember to open with.
+  #   * The transition interpolates the raw PWM outputs, and the RGB
+  #     channels are inverted (1.0 = off). A long transition that starts
+  #     from the off pattern crawls below the LEDs' turn-on threshold: the
+  #     lamp stays dark for most of the ramp and then pops on red, because
+  #     red has the largest delta from off and crosses first.
+  #
+  # So the ramp never transitions out of "off": it jumps straight to the
+  # night light, then climbs through the bottom of the scale in slow, small
+  # moves. Timings are fractions of `duration`, tuned by watching the lamp.
+  # Don't "simplify" this into one long fade.
+  - id: bslamp2_sunrise
+    mode: restart
+    parameters:
+      duration: int          # total ramp time in seconds
+      max_brightness: float  # final brightness, 0.0 - 1.0
+    then:
+      # Remember where the lamp was, so an interrupted sunrise can be undone.
+      - lambda: |-
+          auto v = id(my_light).remote_values;
+          id(bslamp2_sunrise_prev_is_rgb) = v.get_color_mode() == light::ColorMode::RGB;
+          id(bslamp2_sunrise_prev_brightness) = v.get_brightness();
+          id(bslamp2_sunrise_prev_ct) = v.get_color_temperature();
+          id(bslamp2_sunrise_prev_red) = v.get_red();
+          id(bslamp2_sunrise_prev_green) = v.get_green();
+          id(bslamp2_sunrise_prev_blue) = v.get_blue();
+          id(bslamp2_sunrise_prev_valid) = true;
+
+      # A sunrise always starts from darkness. If the lamp is already off
+      # this does nothing. This fires on_turn_off, which is why
+      # bslamp2_sunrise_active is set afterwards and not before.
+      - if:
+          condition:
+            light.is_on: my_light
+          then:
+            - light.turn_off:
+                id: my_light
+                transition_length: 1s
+            - delay: 1200ms
+
+      - globals.set:
+          id: bslamp2_sunrise_active
+          value: "true"
+
+      # Ember: night light mode, instantly. No transition, because `effect`
+      # and `transition_length` are mutually exclusive and clearing a running
+      # effect matters more. 3% of the ramp is spent just glowing here.
+      - light.turn_on:
+          id: my_light
+          effect: None
+          color_temperature: 588 mireds
+          brightness: 1%
+      - delay: !lambda return duration * 30;
+
+      # Stage 1 (18%): night light -> the dimmest white mode the firmware
+      # allows. This crossover is where red turns to orange, so it gets a
+      # long slow transition of its own.
+      - if:
+          condition:
+            lambda: return id(bslamp2_sunrise_active);
+          then:
+            - light.turn_on:
+                id: my_light
+                transition_length: !lambda return duration * 180;
+                color_temperature: 588 mireds
+                brightness: 1.5%
+            - delay: !lambda return duration * 180;
+
+      # Stage 2 (30%): orange -> warm. Still the bottom of the scale, still
+      # the warmest colour, still one single slow transition.
+      - if:
+          condition:
+            lambda: return id(bslamp2_sunrise_active);
+          then:
+            - light.turn_on:
+                id: my_light
+                transition_length: !lambda return duration * 300;
+                color_temperature: 588 mireds
+                brightness: 2.5%
+            - delay: !lambda return duration * 300;
+
+      # Stage 3 (49%): the actual sunrise. 20 steps, each a short transition,
+      # brightness on a squared curve and colour walking 588 -> 333 mireds
+      # (1700K -> 3000K, roughly what a real dawn does).
+      - globals.set:
+          id: bslamp2_sunrise_step
+          value: "0"
+      - repeat:
+          count: 20
+          then:
+            - if:
+                condition:
+                  lambda: return id(bslamp2_sunrise_active);
+                then:
+                  - lambda: id(bslamp2_sunrise_step) += 1;
+                  - light.turn_on:
+                      id: my_light
+                      transition_length: !lambda return (uint32_t) (duration * 24.5f);
+                      brightness: !lambda |-
+                        float p = id(bslamp2_sunrise_step) / 20.0f;
+                        float floor_b = 0.025f;
+                        float top = max_brightness < floor_b ? floor_b : max_brightness;
+                        return floor_b + (top - floor_b) * p * p;
+                      color_temperature: !lambda |-
+                        float p = id(bslamp2_sunrise_step) / 20.0f;
+                        return 588.0f - (588.0f - 333.0f) * p;
+                  - delay: !lambda return (uint32_t) (duration * 24.5f);
+
+      # Finished on its own: the lamp keeps the sunrise result, so there is
+      # nothing to restore any more.
+      - globals.set:
+          id: bslamp2_sunrise_active
+          value: "false"
+      - globals.set:
+          id: bslamp2_sunrise_prev_valid
+          value: "false"
+
+number:
+  - platform: template
+    id: bslamp2_sunrise_duration
+    name: ${bslamp2_sunrise_duration_name}
+    icon: mdi:timer-sand
+    internal: ${ (not bslamp2_sunrise) if bslamp2_sunrise is sameas true or bslamp2_sunrise is sameas false else 'bslamp2_sunrise must be true or false, unquoted' }
+    entity_category: config
+    unit_of_measurement: min
+    min_value: 1
+    max_value: 60
+    step: 0.5
+    initial_value: ${bslamp2_sunrise_duration_min}
+    optimistic: true
+    restore_value: true
+    mode: box
+
+  - platform: template
+    id: bslamp2_sunrise_max_brightness
+    name: ${bslamp2_sunrise_max_brightness_name}
+    icon: mdi:brightness-6
+    internal: ${ (not bslamp2_sunrise) if bslamp2_sunrise is sameas true or bslamp2_sunrise is sameas false else 'bslamp2_sunrise must be true or false, unquoted' }
+    entity_category: config
+    unit_of_measurement: "%"
+    min_value: 5
+    max_value: 100
+    step: 5
+    initial_value: ${bslamp2_sunrise_max_brightness_pct}
+    optimistic: true
+    restore_value: true
+    mode: slider
+
+button:
+  - platform: template
+    id: bslamp2_sunrise_button
+    name: ${bslamp2_sunrise_name}
+    icon: mdi:weather-sunset-up
+    internal: ${ (not bslamp2_sunrise) if bslamp2_sunrise is sameas true or bslamp2_sunrise is sameas false else 'bslamp2_sunrise must be true or false, unquoted' }
+    on_press:
+      - if:
+          condition:
+            lambda: "return !id(bslamp2_sunrise_button).is_internal();"
+          then:
+            - script.execute:
+                id: bslamp2_sunrise
+                duration: !lambda return (int) (id(bslamp2_sunrise_duration).state * 60);
+                max_brightness: !lambda return id(bslamp2_sunrise_max_brightness).state / 100.0f;
+
+  - platform: template
+    id: bslamp2_alert_button
+    name: ${bslamp2_alert_name}
+    icon: mdi:alert-octagon
+    internal: ${ (not bslamp2_alerts) if bslamp2_alerts is sameas true or bslamp2_alerts is sameas false else 'bslamp2_alerts must be true or false, unquoted' }
+    on_press:
+      - if:
+          condition:
+            lambda: "return !id(bslamp2_alert_button).is_internal();"
+          then:
+            - script.execute:
+                id: bslamp2_flash_notify
+                red: 1.0
+                green: 0.0
+                blue: 0.0
+
+  - platform: template
+    id: bslamp2_warning_button
+    name: ${bslamp2_warning_name}
+    icon: mdi:alert
+    internal: ${ (not bslamp2_alerts) if bslamp2_alerts is sameas true or bslamp2_alerts is sameas false else 'bslamp2_alerts must be true or false, unquoted' }
+    on_press:
+      - if:
+          condition:
+            lambda: "return !id(bslamp2_warning_button).is_internal();"
+          then:
+            - script.execute:
+                id: bslamp2_flash_notify
+                red: 1.0
+                green: 0.3
+                blue: 0.0

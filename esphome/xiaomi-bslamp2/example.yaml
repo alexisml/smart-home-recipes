@@ -1,0 +1,79 @@
+# ==========================================================================
+# Example: Xiaomi Mijia Bedside Lamp 2 (MJCTD02YL) with ESPHome
+#
+# HOW TO USE
+#
+# 1. The lamp must already run ESPHome. Its stock firmware can't be
+#    replaced over the air: the first flash is over serial, by opening the
+#    lamp. mmakaay's flashing guide walks through it:
+#    https://github.com/mmakaay/esphome-xiaomi_bslamp2/blob/dev/doc/flashing.md
+#
+# 2. Make sure your ESPHome `secrets.yaml` has `wifi_ssid`,
+#    `wifi_password` and `ota_password` (the dashboard's SECRETS button
+#    edits it).
+#
+# 3. In the ESPHome dashboard (Home Assistant add-on or
+#    `esphome dashboard`), create a device or open the lamp's existing one,
+#    and replace its whole YAML with this file.
+#
+# 4. Edit the substitutions block below:
+#    - `name`: hostname, lowercase and dashes (e.g. bedside-lamp-left).
+#      Must be unique on your network.
+#    - `friendly_name`: what Home Assistant shows (e.g. Left Lamp).
+#    - feature flags: unquoted true / false. Anything else fails validation.
+#
+# 5. INSTALL -> Wirelessly (or over serial for the very first flash).
+#    ESPHome downloads this package and mmakaay's from GitHub at compile time.
+#
+# 6. Home Assistant finds the lamp: Settings -> Devices & services ->
+#    ESPHome -> CONFIGURE. You get the light (with the scene effects in its
+#    effect list) plus the buttons and settings you enabled.
+#
+# Several lamps: one copy of this file per lamp, each with its own `name`
+# and `friendly_name`.
+#
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/xiaomi-bslamp2
+# ==========================================================================
+
+substitutions:
+  name: bedside-lamp
+  friendly_name: Bedside Lamp
+
+  # Features: unquoted true / false.
+  bslamp2_sunrise: true    # Sunrise button + duration / max brightness settings
+  bslamp2_alerts: true     # Alert (red) and Warning (amber) pulse buttons
+
+  # Sunrise starting values. Changeable later from Home Assistant.
+  bslamp2_sunrise_duration_min: "4.5"
+  bslamp2_sunrise_max_brightness_pct: "40"
+
+  # Optional: rename the light, buttons or effects, e.g. for a non-English
+  # Home Assistant. See xiaomi-bslamp2.yaml for every name.
+  # light_name: Luz
+  # bslamp2_sunrise_name: Amanecer
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot if the lamp can't join your Wi-Fi: connect to it and
+  # pick a network from the page that opens.
+  ap:
+    password: !secret wifi_password
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# The package, pulled from GitHub. It brings mmakaay's hardware component,
+# the board setup and `api:`. Don't edit it; override with the substitutions
+# above, or `!extend` (see the README).
+packages:
+  bslamp2:
+    url: https://github.com/alexisml/smart-home-recipes
+    ref: main
+    files: [esphome/xiaomi-bslamp2/xiaomi-bslamp2.yaml]
+    refresh: 1d   # check GitHub for fixes once a day
