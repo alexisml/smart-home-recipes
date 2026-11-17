@@ -1,0 +1,73 @@
+# --------------------------------------------------------------------------
+# Diagnostics
+#
+# Entities that answer "is this device healthy, and did it reboot?" from
+# Home Assistant's history, for any ESP8266/ESP32 device. All of them are
+# diagnostic entities, so they stay off default dashboards.
+#
+# Requires a `time:` platform in your config (for "Last boot"). See README.md.
+# --------------------------------------------------------------------------
+
+substitutions:
+  diag_last_boot_name: Last boot
+  diag_reset_reason_name: Reset reason
+  diag_version_name: ESPHome version
+  diag_wifi_signal_name: WiFi signal
+  diag_wifi_signal_percent_name: WiFi signal percent
+  diag_status_name: Status
+
+# Needed by the reset reason text sensor. `debug:` requires `logger:`; an
+# empty one here merges with your own logger settings.
+debug:
+logger:
+
+sensor:
+  # Boot time, not a counting uptime: the state only changes when the device
+  # boots, so HA's history lists every reboot directly, and nothing is
+  # written to the database every minute.
+  - platform: uptime
+    id: diag_last_boot
+    type: timestamp
+    name: ${diag_last_boot_name}
+    entity_category: diagnostic
+
+  - platform: wifi_signal
+    id: diag_wifi_signal
+    name: ${diag_wifi_signal_name}
+    update_interval: 60s
+    entity_category: diagnostic
+
+  # Same signal as 0-100 %, which is easier to read on a dashboard.
+  - platform: copy
+    source_id: diag_wifi_signal
+    id: diag_wifi_signal_percent
+    name: ${diag_wifi_signal_percent_name}
+    unit_of_measurement: "%"
+    device_class: ""
+    state_class: measurement
+    entity_category: diagnostic
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+
+text_sensor:
+  # Why the device last restarted: power on, watchdog, crash, software reset.
+  # Without it a reboot leaves no trace, because restored values hide it.
+  - platform: debug
+    reset_reason:
+      id: diag_reset_reason
+      name: ${diag_reset_reason_name}
+      entity_category: diagnostic
+
+  # ESPHome version and build time, e.g. "2026.10.2 2026-01-31 12:00:00".
+  # HA's device page shows it too, but only an entity keeps history, so you
+  # can see when each firmware went on.
+  - platform: version
+    id: diag_version
+    name: ${diag_version_name}
+    entity_category: diagnostic
+
+binary_sensor:
+  # Whether the device is connected to Home Assistant (or MQTT).
+  - platform: status
+    id: diag_status
+    name: ${diag_status_name}

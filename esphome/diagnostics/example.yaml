@@ -1,0 +1,55 @@
+# ==========================================================================
+# Example: diagnostics on any ESPHome device
+#
+# HOW TO USE
+#
+# This package goes on top of a device config you already have. Don't
+# replace your config with this file; copy the `packages:` block into it.
+#
+# 1. Open your device's YAML in the ESPHome dashboard.
+# 2. Add the `packages:` block at the bottom of this file (or add the
+#    `diagnostics:` entry to your existing `packages:`).
+# 3. Optional: rename entities with the substitutions shown below.
+# 4. INSTALL -> Wirelessly.
+#
+# Home Assistant then shows six new diagnostic entities on the device's page:
+# Last boot, Reset reason, ESPHome version, WiFi signal (dBm and %), Status.
+#
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/diagnostics
+# ==========================================================================
+
+substitutions:
+  name: my-device
+  friendly_name: My Device
+
+  # Optional renames, e.g. for a non-English Home Assistant:
+  # diag_last_boot_name: Último arranque
+  # diag_reset_reason_name: Motivo de reinicio
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+
+ota:
+  - platform: esphome
+
+# "Last boot" is a timestamp, so the device needs a clock. Skip this if your
+# config already has a `time:` platform, or uses the resilience package.
+time:
+  - platform: homeassistant
+
+packages:
+  diagnostics:
+    url: https://github.com/alexisml/smart-home-recipes
+    ref: main
+    files: [esphome/diagnostics/diagnostics.yaml]
+    refresh: 1d
