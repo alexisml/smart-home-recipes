@@ -1,0 +1,94 @@
+# ==========================================================================
+# Example: SMLIGHT SLWF-01Pro (ESP-12E) on a Midea-protocol AC
+#
+# HOW TO USE
+#
+# 1. Plug the dongle into the AC's USB-style port (usually behind the front
+#    panel). It carries UART, not real USB, and powers the dongle.
+#
+# 2. Get it into your ESPHome dashboard (Home Assistant add-on or
+#    `esphome dashboard`):
+#    - The SLWF-01Pro ships with ESPHome. If the dashboard lists it as
+#      "discovered", click ADOPT, then open its YAML.
+#    - Otherwise create a new device and flash it once over USB with a
+#      USB-UART adapter. After that, updates go over Wi-Fi.
+#
+# 3. Replace the device's whole YAML with this file.
+#
+# 4. Make sure your ESPHome `secrets.yaml` has `wifi_ssid` and
+#    `wifi_password` (the dashboard's SECRETS button edits it).
+#
+# 5. Edit the substitutions block below:
+#    - `name`: hostname, lowercase and dashes (e.g. bedroom-ac). Must be
+#      unique on your network.
+#    - `friendly_name`: what Home Assistant shows (e.g. Bedroom AC).
+#    - feature flags: unquoted true / false. Anything else fails validation.
+#
+# 6. INSTALL -> Wirelessly. ESPHome downloads the package from GitHub at
+#    compile time.
+#
+# 7. Home Assistant finds the device: Settings -> Devices & services ->
+#    ESPHome -> CONFIGURE. You get a climate entity plus the switches you
+#    enabled.
+#
+# Several ACs: one copy of this file per AC, each with its own `name` and
+# `friendly_name`. Everything else can stay the same.
+#
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/midea-uart
+# ==========================================================================
+
+substitutions:
+  name: midea-ac
+  friendly_name: Midea AC
+
+  # Features: unquoted true / false.
+  midea_led: true                # LED switch (the remote's display button)
+  midea_led_on_poweron: true     # "LED on power-on" setting
+  midea_preset_switches: false   # Turbo + Eco switches. Experimental.
+  midea_clean: false             # Clean button. Experimental.
+
+  # Starting value of "LED on power-on". RESTORE_DEFAULT_OFF turns the LED
+  # off 2 s after every power-on; RESTORE_DEFAULT_ON leaves it lit. You can
+  # change it later from Home Assistant without reflashing.
+  midea_led_on_poweron_default: RESTORE_DEFAULT_OFF
+
+  # Optional: rename any entity, e.g. for a non-English Home Assistant.
+  # midea_climate_name: Aire
+  # midea_clean_name: Limpieza
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp8266:
+  board: esp12e
+  # Keep saved settings ("LED on power-on") in flash. The dongle is powered
+  # by the AC, so a power cut wipes the default RTC memory.
+  restore_from_flash: true
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot if the dongle can't join your Wi-Fi: connect to it and
+  # pick a network from the page that opens.
+  ap:
+    ssid: ${name}
+    password: !secret wifi_password
+
+captive_portal:
+
+# Adopting from the dashboard usually adds `encryption: key: ...` here.
+# Keep it if it does.
+api:
+
+ota:
+  - platform: esphome
+
+# The package itself, pulled from GitHub. Don't edit it; override with the
+# substitutions above, or `!extend` (see the README).
+packages:
+  midea:
+    url: https://github.com/alexisml/smart-home-recipes
+    ref: main
+    files: [esphome/midea-uart/midea-uart.yaml]
+    refresh: 1d   # check GitHub for fixes once a day

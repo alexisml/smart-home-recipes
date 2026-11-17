@@ -1,0 +1,261 @@
+# --------------------------------------------------------------------------
+# Midea UART extras
+#
+# ESPHome's `midea` climate component, plus what the IR remote has and the
+# component doesn't: the LED (display) button, keeping the LED off at
+# power-on, Turbo/Eco as switches, and the Clean button.
+#
+# For ACs that speak the Midea UART protocol through a USB/UART dongle
+# (SMLIGHT SLWF-01Pro, or any ESP8266/ESP32 wired to the AC's port). Many
+# brands use it: Midea, Comfee, Carrier, Inventor, Electrolux, Qlima...
+#
+# Your own config provides the board, wifi, api and ota. See example.yaml
+# and README.md.
+# --------------------------------------------------------------------------
+
+substitutions:
+  # ---- Features: true = present, false = hidden from HA and inert --------
+  # Unquoted true/false only. "false" or anything else fails validation.
+  midea_led: true                 # LED switch. Tested.
+  midea_led_on_poweron: true      # "LED on power-on" setting. Tested.
+  midea_preset_switches: false    # Turbo + Eco switches. EXPERIMENTAL.
+  midea_clean: false              # Clean button. EXPERIMENTAL.
+
+  # ---- Defaults -----------------------------------------------------------
+  # Whether the LED stays lit when the AC turns on, until changed from HA.
+  # RESTORE_DEFAULT_ON = leave it lit (the AC's own behaviour),
+  # RESTORE_DEFAULT_OFF = turn it off again 2 s after every power-on.
+  midea_led_on_poweron_default: RESTORE_DEFAULT_ON
+  midea_beeper: "true"            # AC beeps when it accepts a command
+
+  # ---- Wiring -------------------------------------------------------------
+  # SLWF-01Pro / ESP-12 dongles use the hardware UART on GPIO1/GPIO3.
+  midea_tx_pin: "1"
+  midea_rx_pin: "3"
+
+  # ---- Entity names -------------------------------------------------------
+  midea_climate_name: Air Conditioner
+  midea_led_name: LED
+  midea_led_on_poweron_name: LED on power-on
+  midea_turbo_name: Turbo
+  midea_eco_name: Eco
+  midea_clean_name: Clean
+
+# The AC owns the only UART, so no serial log.
+logger:
+  baud_rate: 0
+
+globals:
+  # LED state as read from the AC's status frames: -1 unknown, 0 off, 1 on.
+  - id: midea_display_on
+    type: int
+    initial_value: "-1"
+
+uart:
+  id: midea_uart
+  tx_pin: ${midea_tx_pin}
+  rx_pin: ${midea_rx_pin}
+  baud_rate: 9600
+  # The midea component doesn't expose the LED state, but the AC reports it
+  # in every status reply (0xC0): byte 14 of the body, 0x70 = display off
+  # (same decoding as msmart-ng). This sniffs RX without consuming it; the
+  # midea component still reads every byte.
+  debug:
+    direction: RX
+    dummy_receiver: false
+    after:
+      timeout: 10ms
+    sequence:
+      - lambda: |-
+          // Chunks don't line up with frames, so reassemble first.
+          static std::vector<uint8_t> buf;
+          buf.insert(buf.end(), bytes.begin(), bytes.end());
+          while (true) {
+            auto start = std::find(buf.begin(), buf.end(), (uint8_t) 0xAA);
+            buf.erase(buf.begin(), start);
+            if (buf.size() < 2) break;
+            const size_t len = buf[1] + 1u;  // length byte excludes the checksum
+            if (len < 12) { buf.erase(buf.begin()); continue; }
+            if (buf.size() < len) break;
+            uint8_t sum = 0;
+            for (size_t i = 1; i < len; i++) sum += buf[i];
+            if (sum != 0) { buf.erase(buf.begin()); continue; }  // not a frame
+            if (buf[2] == 0xAC && buf[10] == 0xC0 && len >= 26)
+              id(midea_display_on) = (buf[24] != 0x70) ? 1 : 0;
+            buf.erase(buf.begin(), buf.begin() + len);
+          }
+          if (buf.size() > 128) buf.clear();
+
+climate:
+  - platform: midea
+    id: midea_climate
+    uart_id: midea_uart
+    name: ${midea_climate_name}
+    autoconf: true
+    beeper: ${midea_beeper}
+    visual:
+      min_temperature: 17 °C
+      max_temperature: 30 °C
+      temperature_step: 0.5 °C
+    supported_modes:
+      - FAN_ONLY
+      - HEAT_COOL
+      - COOL
+      - HEAT
+      - DRY
+    custom_fan_modes:
+      - SILENT
+      - TURBO
+    supported_presets:
+      - ECO
+      - BOOST
+      - SLEEP
+    custom_presets:
+      - FREEZE_PROTECTION
+    # Autoconf doesn't add swing modes. VERTICAL is what the tested units
+    # can do; add HORIZONTAL / BOTH with !extend if your louvers move sideways.
+    supported_swing_modes:
+      - VERTICAL
+    on_state:
+      - lambda: |-
+          // Starts as "off", so an AC that is already on at boot counts as
+          // turning on (relights the display after a power cut).
+          static bool was_off = true;
+          const bool off = x.mode == climate::CLIMATE_MODE_OFF;
+          if (was_off && !off) id(midea_apply_led_on_poweron).execute();
+          was_off = off;
+
+switch:
+  # The remote's LED button. The AC only has a toggle command, so each action
+  # toggles only when the state read back differs from the one asked for.
+  # Shows `unknown` until the first status frame.
+  - platform: template
+    id: midea_led
+    name: ${midea_led_name}
+    icon: mdi:led-on
+    internal: ${ (not midea_led) if midea_led is sameas true or midea_led is sameas false else 'midea_led must be true or false, unquoted' }
+    # Template switches default to ALWAYS_OFF, which runs turn_off at every
+    # boot: a blind toggle here, "preset none" on Turbo and Eco. DISABLED
+    # leaves the AC alone at boot.
+    restore_mode: DISABLED
+    lambda: |-
+      if (id(midea_display_on) < 0) return {};
+      return id(midea_display_on) == 1;
+    turn_on_action:
+      - if:
+          condition:
+            lambda: "return id(midea_display_on) != 1;"
+          then:
+            - script.execute: midea_led_toggle
+    turn_off_action:
+      - if:
+          condition:
+            lambda: "return id(midea_display_on) != 0;"
+          then:
+            - script.execute: midea_led_toggle
+
+  # A setting, not a control: whether the LED stays lit when the AC turns on.
+  # The AC lights its display at every power-on, from HA or the remote; with
+  # this off, the device turns it off again. Saved to flash when changed, if
+  # your board config has `restore_from_flash: true` (see example.yaml).
+  - platform: template
+    id: midea_led_on_poweron
+    name: ${midea_led_on_poweron_name}
+    icon: mdi:led-variant-on
+    entity_category: config
+    internal: ${ (not midea_led_on_poweron) if midea_led_on_poweron is sameas true or midea_led_on_poweron is sameas false else 'midea_led_on_poweron must be true or false, unquoted' }
+    optimistic: true
+    restore_mode: ${midea_led_on_poweron_default}
+
+  # EXPERIMENTAL: the remote's Turbo and Eco buttons, as switches over the
+  # climate entity's boost and eco presets. The AC refuses them in modes that
+  # don't allow them (eco is cool-only); the switch then falls back to off.
+  - platform: template
+    id: midea_turbo
+    name: ${midea_turbo_name}
+    icon: mdi:fan-plus
+    internal: ${ (not midea_preset_switches) if midea_preset_switches is sameas true or midea_preset_switches is sameas false else 'midea_preset_switches must be true or false, unquoted' }
+    restore_mode: DISABLED
+    lambda: |-
+      return id(midea_climate).preset.has_value() &&
+             *id(midea_climate).preset == climate::CLIMATE_PRESET_BOOST;
+    turn_on_action:
+      - climate.control:
+          id: midea_climate
+          preset: BOOST
+    turn_off_action:
+      - climate.control:
+          id: midea_climate
+          preset: NONE
+
+  - platform: template
+    id: midea_eco
+    name: ${midea_eco_name}
+    icon: mdi:leaf
+    internal: ${ (not midea_preset_switches) if midea_preset_switches is sameas true or midea_preset_switches is sameas false else 'midea_preset_switches must be true or false, unquoted' }
+    restore_mode: DISABLED
+    lambda: |-
+      return id(midea_climate).preset.has_value() &&
+             *id(midea_climate).preset == climate::CLIMATE_PRESET_ECO;
+    turn_on_action:
+      - climate.control:
+          id: midea_climate
+          preset: ECO
+    turn_off_action:
+      - climate.control:
+          id: midea_climate
+          preset: NONE
+
+script:
+  # Runs when the AC goes from off to on. Waits for fresh status frames, since
+  # the display lights up with the power-on. Does nothing when the feature is
+  # off (its switch is internal) or the setting says to leave the LED lit.
+  - id: midea_apply_led_on_poweron
+    mode: restart
+    then:
+      - delay: 2s
+      - if:
+          condition:
+            lambda: |-
+              return !id(midea_led_on_poweron).is_internal() &&
+                     !id(midea_led_on_poweron).state &&
+                     id(midea_display_on) == 1;
+          then:
+            - script.execute: midea_led_toggle
+
+  # LED toggle, sent raw. `midea_ac.display_toggle` only goes over UART when
+  # the AC reports the LIGHT CONTROL capability; many units don't, and then
+  # it wants an IR transmitter and sends nothing. This is the 0x41 query
+  # MideaUART's DisplayToggleData builds (flags 0x61), frame type 03,
+  # message id 00. The AC answers with a status frame, so the switch follows.
+  - id: midea_led_toggle
+    then:
+      - uart.write:
+          id: midea_uart
+          data: [0xAA, 0x21, 0xAC, 0x8D, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03,
+                 0x41, 0x61, 0x00, 0xFF, 0x02, 0x00, 0x02, 0x00, 0x00, 0x00,
+                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                 0x00, 0x00, 0xE3, 0x19]
+
+button:
+  # EXPERIMENTAL, never run on a unit: the remote's Clean button, Midea
+  # "active clean" (property 0x0039), which the midea component doesn't
+  # offer. Writes a set-properties (0xB0) frame: AA header, appliance AC,
+  # protocol 02, frame type 02 (control), body B0 01 | 39 00 | 01 | 01,
+  # message id 00, CRC8 AC, checksum E8. CRC and checksum were checked
+  # against frames captured from a real unit. Check your unit lists
+  # ACTIVE CLEAN in its capabilities (see README).
+  - platform: template
+    id: midea_clean
+    name: ${midea_clean_name}
+    icon: mdi:broom
+    internal: ${ (not midea_clean) if midea_clean is sameas true or midea_clean is sameas false else 'midea_clean must be true or false, unquoted' }
+    on_press:
+      - if:
+          condition:
+            lambda: "return !id(midea_clean).is_internal();"
+          then:
+            - uart.write:
+                id: midea_uart
+                data: [0xAA, 0x12, 0xAC, 0xBE, 0x00, 0x00, 0x00, 0x00, 0x02, 0x02,
+                       0xB0, 0x01, 0x39, 0x00, 0x01, 0x01, 0x00, 0xAC, 0xE8]
