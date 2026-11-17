@@ -5,7 +5,8 @@ It wraps ESPHome's [`midea`](https://esphome.io/components/climate/midea/)
 climate component and adds what the IR remote has and the component doesn't.
 
 Works with any ESP8266/ESP32 wired to the AC's UART port. Tested on the
-**SMLIGHT SLWF-01Pro** (ESP-12E). Brands using the protocol include Midea,
+**SMLIGHT SLWF-01Pro v1.x** (ESP-12E). The v2.1 (the one with an extra
+USB-C port) uses different UART pins; see [Options](#options). Brands using the protocol include Midea,
 Comfee, Carrier, Inventor, Electrolux and Qlima.
 
 ## Features
@@ -58,7 +59,7 @@ All are substitutions; set them in your own config to override.
 |---|---|---|
 | `midea_led_on_poweron_default` | `RESTORE_DEFAULT_ON` | Starting value of the setting. `RESTORE_DEFAULT_OFF` turns the LED off 2 s after every power-on. Changeable from HA afterwards. |
 | `midea_beeper` | `"true"` | AC beeps when it accepts a command |
-| `midea_tx_pin` / `midea_rx_pin` | `"1"` / `"3"` | UART pins (SLWF-01Pro, ESP-12 dongles) |
+| `midea_tx_pin` / `midea_rx_pin` | `"1"` / `"3"` | UART pins. SLWF-01Pro v1.1 / v1.2: `1` / `3`. **SLWF-01Pro v2.1: `12` / `14`** (per [SMLIGHT's config](https://github.com/smlight-tech/slwf-01pro-esphome)). |
 | `midea_climate_name`, `midea_led_name`, `midea_led_on_poweron_name`, `midea_turbo_name`, `midea_eco_name`, `midea_clean_name` | English | Entity names, e.g. for a non-English Home Assistant |
 
 Changing an entity name later creates a new entity in Home Assistant: its
@@ -109,3 +110,28 @@ autoconf prints them.
   `DISABLED`. Keep that if you copy them.
 - **Eco is cool-only** on Midea. In other modes the AC refuses it and the
   switch falls back to off.
+
+## Credits
+
+This package is built on other people's work:
+
+- [smlight-tech/slwf-01pro-esphome](https://github.com/smlight-tech/slwf-01pro-esphome)
+  (GPL-3.0): SMLIGHT's stock ESPHome config for the SLWF-01Pro. The base
+  config (UART, logger, the `midea` climate block) started from it, and it
+  documents the v1.x and v2.1 pin differences.
+- ESPHome's [`midea` climate component](https://esphome.io/components/climate/midea/),
+  by Sergey Dudanov, built on his
+  [MideaUART](https://github.com/dudanov/MideaUART) library. The LED toggle
+  frame is the one MideaUART's `DisplayToggleData` builds.
+- [mill1000/midea-msmart](https://github.com/mill1000/midea-msmart)
+  (msmart-ng, MIT): the decoding of the display state from status frames
+  (body byte 14, `0x70` = off), and the active clean property (`0x0039`).
+
+Original here: reading the LED state over UART, the LED switch and the
+"LED on power-on" setting, the Turbo/Eco switches, and the raw Clean frame.
+
+## License
+
+**GPL-3.0** ([LICENSE](LICENSE)), because this package derives from SMLIGHT's
+GPL-3.0 config. This applies to this folder only; the rest of the repository
+is MIT.

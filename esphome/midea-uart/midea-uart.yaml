@@ -11,6 +11,15 @@
 #
 # Your own config provides the board, wifi, api and ota. See example.yaml
 # and README.md.
+#
+# Based on SMLIGHT's stock SLWF-01Pro config
+# (github.com/smlight-tech/slwf-01pro-esphome), with protocol details from
+# MideaUART (github.com/dudanov/MideaUART) and msmart-ng
+# (github.com/mill1000/midea-msmart). Credits in README.md.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+# Licensed GPL-3.0, like SMLIGHT's config it derives from (see LICENSE in
+# this folder). The rest of the repository is MIT.
 # --------------------------------------------------------------------------
 
 substitutions:
@@ -29,7 +38,8 @@ substitutions:
   midea_beeper: "true"            # AC beeps when it accepts a command
 
   # ---- Wiring -------------------------------------------------------------
-  # SLWF-01Pro / ESP-12 dongles use the hardware UART on GPIO1/GPIO3.
+  # SLWF-01Pro v1.1/v1.2: GPIO1/GPIO3 (the defaults). SLWF-01Pro v2.1 (has an
+  # extra USB-C port): tx 12, rx 14.
   midea_tx_pin: "1"
   midea_rx_pin: "3"
 

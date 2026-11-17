@@ -52,6 +52,10 @@ substitutions:
   # change it later from Home Assistant without reflashing.
   midea_led_on_poweron_default: RESTORE_DEFAULT_OFF
 
+  # SLWF-01Pro v2.1 (the one with an extra USB-C port) only:
+  # midea_tx_pin: "12"
+  # midea_rx_pin: "14"
+
   # Optional: rename any entity, e.g. for a non-English Home Assistant.
   # midea_climate_name: Aire
   # midea_clean_name: Limpieza
