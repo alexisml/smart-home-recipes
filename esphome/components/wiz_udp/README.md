@@ -10,9 +10,9 @@ bulbs. A wall-switch click or a light entity on the relay device should
 switch the bulbs **in software** (soft off), keeping them powered and
 reachable, and cut the relay only as a fallback.
 
-> **Experimental.** It compiles, and the protocol behaviour described here
-> (unsigned commands, missed packets, power-up state) was tested against
-> real bulbs from a computer. The component itself hasn't run on an ESP yet.
+> **Experimental.** Running on one ESP8266 (Shelly 2.5) with six WiZ bulbs
+> of two generations: commands, status polling and the ARP workaround are
+> verified there; scenes, sync from the WiZ app and calibration are not yet.
 
 ## Install
 
@@ -73,8 +73,9 @@ router. `status_text()` marks such bulbs with `?`. Fix: list them as
 `ip@mac` (`192.168.1.50@a8bb50aabbcc`; colons allowed). The component then
 feeds lwIP that bulb's ARP answer itself before sending, so commands go
 out. For the answers to come back, the bulb must know the ESP's MAC too,
-and its own broadcast question for it doesn't get through either. So every
-minute the component sends the bulb a real ARP request, unicast to its MAC.
+and its own broadcast question for it doesn't get through either. So the component sends the bulb a real ARP request, unicast to its MAC:
+every 3 s while the bulb isn't answering (e.g. still booting after its power
+came on), every minute once it is.
 A bulb learns the asker's address from any request addressed to it (an
 unsolicited ARP reply was ignored). `status_text()` counts these as
 `arp sent/refused`. A bulb's MAC is in

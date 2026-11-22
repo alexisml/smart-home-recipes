@@ -217,6 +217,11 @@ inline void arp_prime(const Bulb &b) {
 // Refreshed every ARP_ANNOUNCE_MS (ARP caches expire). An unsolicited ARP
 // reply was tried first and WiZ bulbs ignored it.
 static const uint32_t ARP_ANNOUNCE_MS = 60000;
+// A bulb that hasn't answered recently (e.g. still booting after its power
+// came on) gets the request every ARP_RETRY_MS instead, so it's reachable
+// within seconds of coming online rather than up to a minute later.
+static const uint32_t ARP_RETRY_MS = 3000;
+static const uint32_t ARP_QUIET_MS = 10000;
 
 inline uint32_t &arp_sent() {
   static uint32_t n = 0;
@@ -230,7 +235,9 @@ inline uint32_t &arp_failed() {
 inline void arp_announce(Bulb &b) {
   struct netif *nif = netif_default;
   if (!b.has_mac || nif == nullptr) return;
-  if (b.announced != 0 && millis() - b.announced < ARP_ANNOUNCE_MS) return;
+  uint32_t now = millis();
+  bool answering = b.seen != 0 && now - b.seen < ARP_QUIET_MS;
+  if (b.announced != 0 && now - b.announced < (answering ? ARP_ANNOUNCE_MS : ARP_RETRY_MS)) return;
   // Allocated like lwIP's own ARP packets (PBUF_LINK: headroom for the
   // Ethernet header and whatever the WiFi driver prepends), and sent through
   // ethernet_output(). A bare PBUF_RAW frame handed to linkoutput corrupted
