@@ -17,6 +17,9 @@
 #include "esphome/components/light/light_effect.h"
 #include "esphome/components/network/util.h"
 #include "esphome/core/component.h"
+#include "lwip/etharp.h"
+#include "lwip/netif.h"
+#include "lwip/pbuf.h"
 #ifdef USE_TEXT
 #include "esphome/components/text/text.h"
 #endif
@@ -79,6 +82,8 @@ struct Bulb {
   bool rgb = false;    // true = colour mode (r/g/b valid)
   int scene = 0;       // WiZ sceneId (0 = none)
   uint8_t r = 0, g = 0, b = 0;
+  bool has_mac = false;  // MAC given in the list (ip@mac)
+  uint8_t mac[6] = {0};
 };
 
 inline WiFiUDP &udp() {
@@ -96,7 +101,30 @@ inline std::vector<Bulb> &bulbs() {
   return v;
 }
 
-// "192.168.1.50, 192.168.1.51,..." -> bulb list (keeps known state of unchanged IPs)
+// Bulb list from "ip, ip, ..." - each entry optionally "ip@mac" (MAC as
+// 12 hex digits, colons allowed). Keeps the known state of unchanged IPs.
+// The MAC is only needed for bulbs that never answer this device's ARP
+// requests (see arp_prime()).
+inline bool parse_mac(const std::string &txt, uint8_t out[6]) {
+  int n = 0, hi = -1;
+  for (char c : txt) {
+    int v;
+    if (c >= '0' && c <= '9') v = c - '0';
+    else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+    else if (c == ':' || c == '-') continue;
+    else return false;
+    if (hi < 0) {
+      hi = v;
+    } else {
+      if (n >= 6) return false;
+      out[n++] = (uint8_t) (hi << 4 | v);
+      hi = -1;
+    }
+  }
+  return n == 6 && hi < 0;
+}
+
 inline void set_ips(const std::string &s) {
   std::vector<Bulb> next;
   size_t p = 0;
@@ -106,18 +134,74 @@ inline void set_ips(const std::string &s) {
     std::string tok = s.substr(p, q - p);
     tok.erase(0, tok.find_first_not_of(" \t"));
     tok.erase(tok.find_last_not_of(" \t") + 1);
+    std::string mac_txt;
+    size_t at = tok.find('@');
+    if (at != std::string::npos) {
+      mac_txt = tok.substr(at + 1);
+      tok = tok.substr(0, at);
+    }
     IPAddress ip;
     if (!tok.empty() && ip.fromString(tok.c_str())) {
       Bulb b;
       b.ip = ip;
       for (auto &old : bulbs())
         if (old.ip == ip) b = old;
+      b.has_mac = !mac_txt.empty() && parse_mac(mac_txt, b.mac);
+      if (!mac_txt.empty() && !b.has_mac) ESP_LOGW(TAG, "bad MAC '%s' for %s", mac_txt.c_str(), tok.c_str());
       next.push_back(b);
     }
     p = q + 1;
   }
   bulbs() = next;
   ESP_LOGI(TAG, "%u bulb(s) configured", (unsigned) bulbs().size());
+}
+
+// --- ARP ------------------------------------------------------------------------
+// Before the first packet to a bulb, lwIP must learn its MAC with a broadcast
+// "who has <ip>?". Some (older, power-saving) WiZ bulbs never answer that
+// from a device on their own subnet, so every packet to them is dropped
+// before it leaves - while hosts reaching them through a router work fine.
+// arp_known() shows whether the MAC is resolved; for bulbs listed as ip@mac,
+// arp_prime() feeds lwIP that bulb's ARP reply itself, so sends go out as
+// unicast straight away. (This core's lwIP has static ARP entries compiled
+// out, so the entry is refreshed before sends instead.)
+
+inline bool arp_known(const IPAddress &ip) {
+  struct netif *nif = netif_default;
+  if (nif == nullptr) return false;
+  ip4_addr_t a;
+  a.addr = (uint32_t) ip;
+  struct eth_addr *eth = nullptr;
+  const ip4_addr_t *ip_ret = nullptr;
+  return etharp_find_addr(nif, &a, &eth, &ip_ret) >= 0;
+}
+
+inline void arp_prime(const Bulb &b) {
+  struct netif *nif = netif_default;
+  if (!b.has_mac || nif == nullptr || nif->input == nullptr || arp_known(b.ip)) return;
+  struct pbuf *p = pbuf_alloc(PBUF_RAW, 42, PBUF_RAM);
+  if (p == nullptr) return;
+  uint8_t *f = (uint8_t *) p->payload;
+  memcpy(f, nif->hwaddr, 6);  // Ethernet: to us, from the bulb, type ARP
+  memcpy(f + 6, b.mac, 6);
+  f[12] = 0x08;
+  f[13] = 0x06;
+  uint8_t *a = f + 14;  // ARP reply: <bulb ip> is at <bulb mac>
+  a[0] = 0x00;
+  a[1] = 0x01;
+  a[2] = 0x08;
+  a[3] = 0x00;
+  a[4] = 6;
+  a[5] = 4;
+  a[6] = 0x00;
+  a[7] = 0x02;
+  memcpy(a + 8, b.mac, 6);
+  uint32_t sip = (uint32_t) b.ip;
+  memcpy(a + 14, &sip, 4);
+  memcpy(a + 18, nif->hwaddr, 6);
+  uint32_t tip = ip4_addr_get_u32(netif_ip4_addr(nif));
+  memcpy(a + 24, &tip, 4);
+  if (nif->input(p, nif) != ERR_OK) pbuf_free(p);
 }
 
 // Counters for diagnostics (status_text()).
@@ -147,6 +231,8 @@ inline void send_to(const IPAddress &ip, const std::string &msg) {
     delay(1);  // lets the WiFi stack run
     poll();
   }
+  for (auto &b : bulbs())
+    if (b.ip == ip) arp_prime(b);
   for (int attempt = 0; attempt < 2; attempt++) {
     udp().beginPacket(ip, BULB_PORT);
     udp().write((const uint8_t *) msg.data(), msg.size());
@@ -259,7 +345,8 @@ inline void poll() {
 }
 
 // One-line diagnostics: traffic counters and, per bulb, seconds since its
-// last answer ("-" = never), e.g. "tx 120/0 rx 40 ok 40 unk 0 bad 0 | .35 2s .36 -".
+// last answer ("-" = never, "?" appended = its MAC isn't resolved), e.g.
+// "tx 120/0 rx 40 ok 40 unk 0 bad 0 | .35 2s .36 -?".
 inline std::string status_text() {
   auto &st = stats();
   char head[96];
@@ -269,10 +356,11 @@ inline std::string status_text() {
   uint32_t now = millis();
   for (auto &b : bulbs()) {
     char part[24];
+    const char *arp = arp_known(b.ip) ? "" : "?";  // "?" = MAC not resolved
     if (b.seen == 0)
-      snprintf(part, sizeof(part), " .%u -", (unsigned) b.ip[3]);
+      snprintf(part, sizeof(part), " .%u -%s", (unsigned) b.ip[3], arp);
     else
-      snprintf(part, sizeof(part), " .%u %us", (unsigned) b.ip[3], (unsigned) ((now - b.seen) / 1000));
+      snprintf(part, sizeof(part), " .%u %us%s", (unsigned) b.ip[3], (unsigned) ((now - b.seen) / 1000), arp);
     out += part;
   }
   return out;
