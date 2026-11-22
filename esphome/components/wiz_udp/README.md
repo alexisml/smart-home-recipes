@@ -58,9 +58,11 @@ ESP8266 (Arduino) only, as that's what it was tested on.
   unread packets.
 - **Verify and retry.** UDP drops packets, and weak-signal bulbs miss
   commands often; in testing one bulb needed six tries. After a command,
-  verification rounds (every ~250 ms) resend the command to any bulb that
-  answers in the wrong state, and queue another question for every bulb not
-  yet confirmed.
+  verification rounds (every ~250 ms) resend the command to every bulb not
+  yet confirmed, including silent ones, since a bulb can get commands while
+  its answers are lost. Each resend is preceded by a fresh unicast ARP request,
+  and another question is queued. Silent bulbs get a scene at most about
+  once a second, because resending a scene restarts its animation.
 - A bulb counts as confirmed only when it reports the exact target: on/off,
   brightness (±1 %), white temperature (±50 K) or colour (±3), or the scene.
 
@@ -75,7 +77,7 @@ feeds lwIP that bulb's ARP answer itself before sending, so commands go
 out. For the answers to come back, the bulb must know the ESP's MAC too,
 and its own broadcast question for it doesn't get through either. So the component sends the bulb a real ARP request, unicast to its MAC:
 every 3 s while the bulb isn't answering (e.g. still booting after its power
-came on), every minute once it is.
+came on), every 15 s once it is, and before every command retry.
 A bulb learns the asker's address from any request addressed to it (an
 unsolicited ARP reply was ignored). `status_text()` counts these as
 `arp sent/refused`. A bulb's MAC is in

@@ -214,9 +214,10 @@ inline void arp_prime(const Bulb &b) {
 // asker's MAC from any ARP request addressed to it, so send it a real ARP
 // request ("who has <bulb ip>? tell <our ip>") - but unicast to its MAC,
 // which does get through. Its reply also gives lwIP a genuine entry.
-// Refreshed every ARP_ANNOUNCE_MS (ARP caches expire). An unsolicited ARP
+// Refreshed every ARP_ANNOUNCE_MS (ARP caches expire; one bulb in testing
+// forgot us within seconds), and before every retry of a command. An unsolicited ARP
 // reply was tried first and WiZ bulbs ignored it.
-static const uint32_t ARP_ANNOUNCE_MS = 60000;
+static const uint32_t ARP_ANNOUNCE_MS = 15000;
 // A bulb that hasn't answered recently (e.g. still booting after its power
 // came on) gets the request every ARP_RETRY_MS instead, so it's reachable
 // within seconds of coming online rather than up to a minute later.
@@ -232,12 +233,12 @@ inline uint32_t &arp_failed() {
   return n;
 }
 
-inline void arp_announce(Bulb &b) {
+inline void arp_announce(Bulb &b, bool force = false) {
   struct netif *nif = netif_default;
   if (!b.has_mac || nif == nullptr) return;
   uint32_t now = millis();
   bool answering = b.seen != 0 && now - b.seen < ARP_QUIET_MS;
-  if (b.announced != 0 && now - b.announced < (answering ? ARP_ANNOUNCE_MS : ARP_RETRY_MS)) return;
+  if (!force && b.announced != 0 && now - b.announced < (answering ? ARP_ANNOUNCE_MS : ARP_RETRY_MS)) return;
   // Allocated like lwIP's own ARP packets (PBUF_LINK: headroom for the
   // Ethernet header and whatever the WiFi driver prepends), and sent through
   // ethernet_output(). A bare PBUF_RAW frame handed to linkoutput corrupted
@@ -547,14 +548,25 @@ inline bool all_confirmed(uint32_t since, const Target &t) {
   return true;
 }
 
-// One verification round: bulbs that answered (since `since`) but don't
-// match get the command again right away; every unconfirmed bulb is queued
-// to be asked again (sequentially). A bulb that just came online is caught
-// by its first answer.
+// One verification round: every bulb not yet confirmed gets the command
+// again (silent ones too - a lost command plus a lost answer would otherwise
+// never be retried), preceded by a fresh unicast ARP request, and is queued
+// to be asked again. Commands are idempotent; only a scene restarts its
+// animation, and only on a bulb that hasn't confirmed it.
 inline void verify_round(uint32_t since, const Target &t) {
   std::string cmd = pilot(t);
-  for (auto &b : bulbs())
-    if (fresh(b, since) && !matches(b, t)) send_to(b.ip, cmd);
+  // A silent bulb may be getting the commands but losing its answers, so
+  // for scenes (resend = animation restart) retry silent bulbs only every
+  // 4th round, about once a second.
+  static uint32_t round = 0;
+  round++;
+  for (auto &b : bulbs()) {
+    if (confirmed(b, since, t)) continue;
+    bool silent = !fresh(b, since);
+    if (silent && t.scene > 0 && round % 4 != 0) continue;
+    arp_announce(b, true);
+    send_to(b.ip, cmd);
+  }
   for (size_t i = 0; i < bulbs().size(); i++)
     if (!confirmed(bulbs()[i], since, t)) ask(i);
 }
