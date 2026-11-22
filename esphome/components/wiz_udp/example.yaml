@@ -1,0 +1,120 @@
+# ==========================================================================
+# Example: control WiZ bulbs from an ESP8266 relay device over local UDP
+#
+# A minimal device: the bulb list in a text entity, a count of bulbs online,
+# and "all off" / "all on" buttons that send to every bulb at once and then
+# verify for 3 s, logging any bulb that didn't confirm.
+#
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/components/wiz_udp
+# ==========================================================================
+
+substitutions:
+  name: my-relay
+  friendly_name: My Relay
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - lambda: 'wiz_udp::set_ips(id(wiz_ips).state);'
+
+esp8266:
+  board: esp01_1m
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+
+ota:
+  - platform: esphome
+
+external_components:
+  - source: github://alexisml/smart-home-recipes@main
+    components: [wiz_udp]
+    refresh: 1d
+
+wiz_udp:
+
+globals:
+  - id: wiz_cmd_started
+    type: uint32_t
+    initial_value: '0'
+
+text:
+  - platform: template
+    name: "WiZ bulbs"
+    id: wiz_ips
+    entity_category: config
+    mode: text
+    optimistic: true
+    restore_value: true
+    max_length: 120
+    initial_value: "192.168.1.50,192.168.1.51"
+    on_value:
+      - lambda: 'wiz_udp::set_ips(x);'
+
+interval:
+  # Read answers often; ask everyone every 3 s.
+  - interval: 30ms
+    then:
+      - lambda: 'wiz_udp::poll();'
+  - interval: 3s
+    then:
+      - lambda: 'wiz_udp::get_pilot_all();'
+
+sensor:
+  - platform: template
+    name: "WiZ bulbs online"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: 'return wiz_udp::online_count(10000);'
+
+script:
+  # Send a target to all bulbs, then verify for up to 3 s.
+  - id: wiz_send
+    parameters:
+      turn_on: bool
+    mode: restart
+    then:
+      - lambda: |-
+          id(wiz_cmd_started) = millis();
+          auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
+          wiz_udp::send_all(wiz_udp::pilot(t));
+      - delay: 150ms
+      - while:
+          condition:
+            lambda: |-
+              auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
+              return !wiz_udp::all_confirmed(id(wiz_cmd_started), t) && millis() - id(wiz_cmd_started) < 3000;
+          then:
+            - lambda: |-
+                auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
+                wiz_udp::verify_round(id(wiz_cmd_started), t);
+            - delay: 250ms
+      - lambda: |-
+          auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
+          if (wiz_udp::all_confirmed(id(wiz_cmd_started), t))
+            ESP_LOGI("wiz", "all bulbs confirmed");
+          else
+            ESP_LOGW("wiz", "not confirmed: %s", wiz_udp::unconfirmed_list(id(wiz_cmd_started), t).c_str());
+
+button:
+  - platform: template
+    name: "WiZ all off"
+    on_press:
+      - script.execute:
+          id: wiz_send
+          turn_on: false
+  - platform: template
+    name: "WiZ all on"
+    on_press:
+      - script.execute:
+          id: wiz_send
+          turn_on: true

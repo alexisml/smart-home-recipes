@@ -5,6 +5,8 @@ Each one is self-contained: take the one you need, nothing else comes with it.
 
 ## ESPHome
 
+### Packages
+
 | Package | For | What it adds |
 |---|---|---|
 | [`midea-uart`](esphome/devices/midea-uart/) | Midea-protocol ACs over UART (SLWF-01Pro and similar) | LED button with real state, LED off at power-on, Turbo/Eco switches, Clean button |
@@ -22,6 +24,21 @@ packages:
     url: https://github.com/alexisml/smart-home-recipes
     ref: main
     files: [esphome/devices/midea-uart/midea-uart.yaml]
+    refresh: 1d
+```
+
+### Components
+
+C++ helpers loaded with `external_components`, for things YAML alone can't do.
+
+| Component | For | What it adds |
+|---|---|---|
+| [`wiz_udp`](esphome/components/wiz_udp/) | ESP8266 devices that switch WiZ bulbs | Local UDP control of WiZ bulbs from lambdas: send to all at once, verify and retry, scenes, state polling. **Experimental.** |
+
+```yaml
+external_components:
+  - source: github://alexisml/smart-home-recipes@main
+    components: [wiz_udp]
     refresh: 1d
 ```
 
@@ -53,6 +70,8 @@ package's README has a Credits section saying exactly what came from where.
 - [dudanov/MideaUART](https://github.com/dudanov/MideaUART) and
   [mill1000/midea-msmart](https://github.com/mill1000/midea-msmart): Midea
   protocol details used by `midea-uart`
+- [sbidy/pywizlight](https://github.com/sbidy/pywizlight): WiZ local
+  protocol details used by `wiz_udp`
 - [mmakaay/esphome-xiaomi_bslamp2](https://github.com/mmakaay/esphome-xiaomi_bslamp2):
   the Bedside Lamp 2 component and packages `xiaomi-bslamp2` builds on
 
