@@ -15,10 +15,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  on_boot:
-    priority: -100
-    then:
-      - lambda: 'wiz_udp::set_ips(id(wiz_ips).state);'
 
 esp8266:
   board: esp01_1m
@@ -39,12 +35,9 @@ external_components:
     components: [wiz_udp]
     refresh: 1d
 
+# Reads bulb answers and keeps the bulb list in sync with the text entity.
 wiz_udp:
-
-globals:
-  - id: wiz_cmd_started
-    type: uint32_t
-    initial_value: '0'
+  bulbs: wiz_ips
 
 text:
   - platform: template
@@ -56,14 +49,9 @@ text:
     restore_value: true
     max_length: 120
     initial_value: "192.168.1.50,192.168.1.51"
-    on_value:
-      - lambda: 'wiz_udp::set_ips(x);'
 
 interval:
-  # Read answers often; ask everyone every 3 s.
-  - interval: 30ms
-    then:
-      - lambda: 'wiz_udp::poll();'
+  # Ask every bulb for its state every 3 s (answers are read by the component).
   - interval: 3s
     then:
       - lambda: 'wiz_udp::get_pilot_all();'
@@ -77,33 +65,26 @@ sensor:
     lambda: 'return wiz_udp::online_count(10000);'
 
 script:
-  # Send a target to all bulbs, then verify for up to 3 s.
+  # Send a target to all bulbs at once, then verify every 250 ms for 3 s.
   - id: wiz_send
     parameters:
       turn_on: bool
     mode: restart
     then:
       - lambda: |-
-          id(wiz_cmd_started) = millis();
           auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
-          wiz_udp::send_all(wiz_udp::pilot(t));
+          wiz_udp::begin_command(t, 3000);
       - delay: 150ms
       - while:
           condition:
-            lambda: |-
-              auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
-              return !wiz_udp::all_confirmed(id(wiz_cmd_started), t) && millis() - id(wiz_cmd_started) < 3000;
+            lambda: 'return wiz_udp::command_step();'
           then:
-            - lambda: |-
-                auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
-                wiz_udp::verify_round(id(wiz_cmd_started), t);
             - delay: 250ms
       - lambda: |-
-          auto t = turn_on ? wiz_udp::target_on(1.0f, false, 1, 1, 1, 370) : wiz_udp::target_off();
-          if (wiz_udp::all_confirmed(id(wiz_cmd_started), t))
+          if (wiz_udp::command_confirmed())
             ESP_LOGI("wiz", "all bulbs confirmed");
           else
-            ESP_LOGW("wiz", "not confirmed: %s", wiz_udp::unconfirmed_list(id(wiz_cmd_started), t).c_str());
+            ESP_LOGW("wiz", "not confirmed: %s", wiz_udp::command_unconfirmed().c_str());
 
 button:
   - platform: template

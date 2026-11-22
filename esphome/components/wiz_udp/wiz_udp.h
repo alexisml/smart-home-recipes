@@ -7,11 +7,19 @@
 #pragma once
 
 #include <WiFiUdp.h>
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 #include "esphome/components/json/json_util.h"
 #include "esphome/core/log.h"
 #include "esphome/components/light/light_state.h"
+#include "esphome/components/light/light_effect.h"
+#include "esphome/components/network/util.h"
+#include "esphome/core/component.h"
+#ifdef USE_TEXT
+#include "esphome/components/text/text.h"
+#endif
 
 namespace wiz_udp {
 
@@ -19,23 +27,47 @@ static const char *const TAG = "wiz_udp";
 static const uint16_t BULB_PORT = 38899;
 static const uint16_t LOCAL_PORT = 38900;
 
-// WiZ scenes (sceneId) in the order of your light's `effects:` list:
-// effect index n (1-based, 0 = no effect) -> SCENES[n - 1]. Name the effects
-// however you like; only the order matters. Rhythm (1000), custom (256+) and
-// sync (201-204) scenes are left out.
-static const int SCENES[] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-                             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 40};
-static const size_t N_SCENES = sizeof(SCENES) / sizeof(SCENES[0]);
+// A WiZ scene shown as an effect on a light. It does nothing on its own:
+// selecting it changes the light's state, and your on_state logic sends the
+// scene (target_from() reads it back from the effect name).
+class SceneEffect : public esphome::light::LightEffect {
+ public:
+  SceneEffect(const char *name, int scene) : LightEffect(name), scene_(scene) {}
+  void apply() override {}
+  int scene() const { return this->scene_; }
 
-// sceneId for an effect index (0 = no effect / not a scene).
-inline int scene_for_effect(uint32_t effect_index) {
-  return (effect_index >= 1 && effect_index <= N_SCENES) ? SCENES[effect_index - 1] : 0;
+ protected:
+  int scene_;
+};
+
+inline std::vector<SceneEffect *> &scene_effects() {
+  static std::vector<SceneEffect *> v;
+  return v;
 }
-// Effect index for a sceneId (0 = not in the list).
-inline uint32_t effect_for_scene(int scene) {
-  for (size_t i = 0; i < N_SCENES; i++)
-    if (SCENES[i] == scene) return (uint32_t) (i + 1);
+
+// sceneId for an effect name ("None" / unknown -> 0).
+inline int scene_for_effect_name(const char *name) {
+  for (auto *e : scene_effects())
+    if (strcmp(e->get_name().c_str(), name) == 0) return e->scene();
   return 0;
+}
+// Effect name for a sceneId (nullptr = no effect for it).
+inline const char *effect_name_for_scene(int scene) {
+  for (auto *e : scene_effects())
+    if (e->scene() == scene) return e->get_name().c_str();
+  return nullptr;
+}
+
+// Scene 11 ("warm white") is also what a bulb reports in plain warm white,
+// e.g. right after power-up, so it is treated as white, not as a scene.
+static const int SCENE_WARM_WHITE = 11;
+inline bool is_scene(int scene) { return scene > 0 && scene != SCENE_WARM_WHITE && effect_name_for_scene(scene) != nullptr; }
+
+// Scenes that change their own brightness (wake-up, bedtime, pulse, alarm,
+// dim-to-warm): confirmed by scene id only, since their reported dimming
+// moves and resending would restart the animation.
+inline bool scene_varies_brightness(int scene) {
+  return scene == 9 || scene == 10 || scene == 31 || scene == 35 || scene == 40;
 }
 
 struct Bulb {
@@ -122,7 +154,8 @@ inline void poll() {
         if (r["state"].is<bool>()) b.state = r["state"].as<bool>() ? 1 : 0;
         if (r["dimming"].is<int>()) b.dimming = r["dimming"].as<int>();
         b.scene = r["sceneId"].is<int>() ? r["sceneId"].as<int>() : 0;
-        if (r["r"].is<int>() && r["g"].is<int>() && r["b"].is<int>()) {
+        if (r["r"].is<int>() && r["g"].is<int>() && r["b"].is<int>() &&
+            (r["r"].as<int>() > 0 || r["g"].as<int>() > 0 || r["b"].as<int>() > 0)) {
           b.rgb = true;
           b.r = r["r"].as<int>();
           b.g = r["g"].as<int>();
@@ -131,6 +164,11 @@ inline void poll() {
         } else if (r["temp"].is<int>()) {
           b.rgb = false;
           b.temp = r["temp"].as<int>();
+        } else {
+          // Neither colour nor white reported (some scenes): don't keep stale
+          // values. Scene 11 is warm white, 2700 K.
+          b.rgb = false;
+          b.temp = b.scene == SCENE_WARM_WHITE ? 2700 : 0;
         }
         return true;
       });
@@ -195,7 +233,7 @@ inline Target target_from(esphome::light::LightState *l) {
   if (!v.is_on()) return target_off();
   Target t = target_on(v.get_brightness(), v.get_color_mode() == esphome::light::ColorMode::RGB, v.get_red(),
                        v.get_green(), v.get_blue(), v.get_color_temperature());
-  t.scene = scene_for_effect(l->get_current_effect_index());
+  t.scene = scene_for_effect_name(l->get_effect_name().c_str());
   return t;
 }
 
@@ -219,13 +257,24 @@ inline std::string pilot(const Target &t) {
 
 // Does the bulb's last report match the target (state, and when on:
 // brightness, colour or white temperature)?
+// Same colour, compared as proportions (hue/saturation) so bulbs that scale
+// or round their channels still match. All-zero channels never match.
+inline bool same_color(int r1, int g1, int b1, int r2, int g2, int b2) {
+  int m1 = std::max(r1, std::max(g1, b1)), m2 = std::max(r2, std::max(g2, b2));
+  if (m1 <= 0 || m2 <= 0) return false;
+  return fabsf((float) r1 / m1 - (float) r2 / m2) <= 0.1f && fabsf((float) g1 / m1 - (float) g2 / m2) <= 0.1f &&
+         fabsf((float) b1 / m1 - (float) b2 / m2) <= 0.1f;
+}
+
 inline bool matches(const Bulb &b, const Target &t) {
   if (b.state != (t.on ? 1 : 0)) return false;
   if (!t.on) return true;
+  // Scenes: scene id plus brightness (±2, a little looser than colours since
+  // resending a scene restarts its animation).
+  if (t.scene > 0)
+    return b.scene == t.scene && (scene_varies_brightness(t.scene) || abs((int) b.dimming - t.dimming) <= 2);
   if (abs((int) b.dimming - t.dimming) > 1) return false;
-  if (t.scene > 0) return b.scene == t.scene;
-  if (t.rgb)
-    return b.rgb && abs((int) b.r - t.r) <= 3 && abs((int) b.g - t.g) <= 3 && abs((int) b.b - t.b) <= 3;
+  if (t.rgb) return b.rgb && same_color(b.r, b.g, b.b, t.r, t.g, t.b);
   return !b.rgb && abs((int) b.temp - t.temp) <= 50;
 }
 
@@ -278,7 +327,7 @@ inline Target target_of(const Bulb &b) {
   t.b = b.b;
   if (b.temp > 0) t.temp = b.temp;
   // Scene 11 is also what plain warm white reports; restore it as white.
-  t.scene = (b.scene > 0 && b.scene != 11 && effect_for_scene(b.scene) != 0) ? b.scene : 0;
+  t.scene = is_scene(b.scene) ? b.scene : 0;
   return t;
 }
 
@@ -320,7 +369,8 @@ inline std::string not_fresh_list(uint32_t since) {
 struct Group {
   bool known = false, on = false, rgb = false;
   float brightness = 1.0f, r = 1.0f, g = 1.0f, b = 1.0f, mireds = 370.0f;
-  int scene = 0;
+  int scene = 0;      // running scene (is_scene)
+  int raw_scene = 0;  // sceneId as reported, including 11
 };
 
 inline Group group(uint32_t max_age_ms) {
@@ -332,7 +382,8 @@ inline Group group(uint32_t max_age_ms) {
     if (bl.state == 1 && !gr.on) {
       gr.on = true;
       gr.brightness = bl.dimming / 100.0f;
-      gr.scene = effect_for_scene(bl.scene) != 0 ? bl.scene : 0;
+      gr.scene = is_scene(bl.scene) ? bl.scene : 0;
+      gr.raw_scene = bl.scene;
       if (bl.rgb) {
         gr.rgb = true;
         float m = std::max(bl.r, std::max(bl.g, bl.b));
@@ -347,5 +398,151 @@ inline Group group(uint32_t max_age_ms) {
   }
   return gr;
 }
+
+// --- Quiet light updates ------------------------------------------------------
+// Internal updates of the light (sync, mirroring a relay, ending an effect)
+// go through perform_quietly(). on_state still fires (synchronously, inside
+// perform), so gate your user-command logic with `if (!wiz_udp::quiet())`.
+
+inline bool &quiet_flag() {
+  static bool q = false;
+  return q;
+}
+inline bool quiet() { return quiet_flag(); }
+inline void perform_quietly(esphome::light::LightCall &call) {
+  quiet_flag() = true;
+  call.perform();
+  quiet_flag() = false;
+}
+
+// --- One command at a time, sent to all, then verified ------------------------
+
+struct Command {
+  Target target;
+  uint32_t started = 0;
+  uint32_t window = 0;
+};
+inline Command &command() {
+  static Command c;
+  return c;
+}
+
+// Send `t` to every bulb now; verification runs for `window_ms`.
+inline void begin_command(const Target &t, uint32_t window_ms) {
+  auto &c = command();
+  c.target = t;
+  c.started = millis();
+  c.window = window_ms;
+  send_all(pilot(t));
+}
+inline bool command_confirmed() { return all_confirmed(command().started, command().target); }
+// One verification round. True while the command is still pending
+// (not confirmed by every bulb and inside its window): call every ~250 ms.
+inline bool command_step() {
+  auto &c = command();
+  if (command_confirmed() || millis() - c.started >= c.window) return false;
+  verify_round(c.started, c.target);
+  return true;
+}
+inline std::string command_unconfirmed() { return unconfirmed_list(command().started, command().target); }
+inline uint32_t command_age() { return millis() - command().started; }
+
+// --- Mirror the bulbs into a light --------------------------------------------
+// Quietly sets the light to what the bulbs show: on if any answering bulb is
+// on, brightness/colour/white or scene of the first lit one. A cut relay
+// (relay_on false) shows as off. Returns true if the light was changed.
+inline bool sync_light(esphome::light::LightState *l, bool relay_on, uint32_t max_age_ms = 10000) {
+  using esphome::light::ColorMode;
+  Group g = group(max_age_ms);
+  if (relay_on && !g.known) return false;
+  bool want = relay_on && g.on;
+  auto &v = l->remote_values;
+  int cur_raw = scene_for_effect_name(l->get_effect_name().c_str());
+  int cur_scene = is_scene(cur_raw) ? cur_raw : 0;
+  bool differs = want != v.is_on();
+  // "Warm white" (11) picked as an effect and the bulbs report scene 11:
+  // keep the effect, only follow brightness.
+  if (want && !differs && cur_raw == SCENE_WARM_WHITE && g.raw_scene == SCENE_WARM_WHITE) {
+    differs = fabsf(std::max(0.1f, g.brightness) - std::max(0.1f, v.get_brightness())) > 0.02f;
+    if (!differs) return false;
+    auto call = l->make_call();
+    call.set_brightness(g.brightness);
+    perform_quietly(call);
+    return true;
+  }
+  if (want && !differs) {
+    float bri = std::max(0.1f, g.brightness);
+    if (g.scene > 0) {
+      differs = cur_scene != g.scene || fabsf(bri - std::max(0.1f, v.get_brightness())) > 0.02f;
+    } else {
+      bool is_rgb = v.get_color_mode() == ColorMode::RGB;
+      float mireds = std::min(1000000.0f / 2200.0f, std::max(1000000.0f / 6500.0f, g.mireds));
+      differs = cur_scene != 0 || fabsf(bri - std::max(0.1f, v.get_brightness())) > 0.02f || g.rgb != is_rgb ||
+                (g.rgb ? (fabsf(g.r - v.get_red()) > 0.02f || fabsf(g.g - v.get_green()) > 0.02f ||
+                          fabsf(g.b - v.get_blue()) > 0.02f)
+                       : fabsf(mireds - v.get_color_temperature()) > 5.0f);
+    }
+  }
+  if (!differs) return false;
+  auto call = l->make_call();
+  call.set_state(want);
+  if (want) {
+    call.set_brightness(g.brightness);
+    const char *eff = g.scene > 0 ? effect_name_for_scene(g.scene) : nullptr;
+    if (eff != nullptr) {
+      call.set_effect(eff);  // (no transition: ESPHome rejects it with an effect)
+    } else {
+      call.set_effect("None");
+      if (g.rgb) {
+        call.set_color_mode(ColorMode::RGB);
+        call.set_red(g.r);
+        call.set_green(g.g);
+        call.set_blue(g.b);
+      } else {
+        call.set_color_mode(ColorMode::COLOR_TEMPERATURE);
+        call.set_color_temperature(g.mireds);
+      }
+    }
+  }
+  perform_quietly(call);
+  return true;
+}
+
+// --- The component ------------------------------------------------------------
+// Reads bulb answers in its loop, keeps the bulb list in sync with an optional
+// text entity, and adds the WiZ scenes as effects to an optional light.
+class WizUdp : public esphome::Component {
+ public:
+#ifdef USE_TEXT
+  void set_bulbs_text(esphome::text::Text *t) { this->bulbs_text_ = t; }
+#endif
+  void add_scene(int scene, const char *name) {
+    auto *e = new SceneEffect(name, scene);  // NOLINT: lives for the program
+    scene_effects().push_back(e);
+    this->effects_.push_back(e);
+  }
+  // Call after all add_scene() and before the light's setup(). The light keeps
+  // a pointer to effects_, which never changes after this.
+  void attach_scenes(esphome::light::LightState *l) { l->add_effects(this->effects_.data(), this->effects_.size()); }
+
+  void setup() override {
+#ifdef USE_TEXT
+    if (this->bulbs_text_ != nullptr) {
+      set_ips(this->bulbs_text_->state);
+      this->bulbs_text_->add_on_state_callback([](const std::string &x) { set_ips(x); });
+    }
+#endif
+  }
+  void loop() override {
+    if (esphome::network::is_connected()) poll();
+  }
+  float get_setup_priority() const override { return esphome::setup_priority::AFTER_WIFI; }
+
+ protected:
+  std::vector<esphome::light::LightEffect *> effects_;
+#ifdef USE_TEXT
+  esphome::text::Text *bulbs_text_{nullptr};
+#endif
+};
 
 }  // namespace wiz_udp

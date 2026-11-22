@@ -23,7 +23,22 @@ external_components:
     refresh: 1d
 
 wiz_udp:
+  bulbs: my_bulbs        # optional: text entity holding "ip, ip, ..."
+  light: my_light        # optional: adds the WiZ scenes as this light's effects
+  scenes:                # optional: which scenes and their names (order kept)
+    1: Ocean
+    4: Party
 ```
+
+- **`bulbs`**: the bulb list comes from this text entity and follows it at
+  runtime. Without it, call `wiz_udp::set_ips(...)` yourself.
+- **`light`**: the WiZ scenes are added as effects on that light. They're
+  inert placeholders: picking one changes the light's state, and
+  `target_from(light)` turns the effect name into the scene. Default: scenes
+  1–36 and 40 with English names. Use **`scenes`** to rename them (any
+  language) or pick a subset.
+- The component reads bulb answers continuously. Sending, verifying and
+  falling back stay in your config.
 
 ESP8266 (Arduino) only, as that's what it was tested on.
 
@@ -47,43 +62,64 @@ requires signed commands (`udp_signing_key`) is **not supported**.
 
 ## API
 
+All in namespace `wiz_udp`, callable from any lambda.
+
 | Function | What it does |
 |---|---|
-| `set_ips(str)` | Set the bulb list from `"ip, ip, ..."`. Keeps the last known state of addresses that stay. |
-| `poll()` | Read the bulbs' answers. Call often, e.g. a 30 ms `interval:`. |
-| `get_pilot_all()` | Ask every bulb for its state, all at once. |
-| `send_all(msg)` | Send a raw JSON command to every bulb, all at once. |
-| `target_off()`, `target_on(brightness, color, r, g, b, mireds)` | Build a target state (values as ESPHome lights use them, 0..1 and mireds). |
-| `target_from(light_state)` | Target from a light entity's current state; its active effect maps to a WiZ scene (see Scenes). |
-| `pilot(target)` | The `setPilot` JSON for a target. |
-| `verify_round(since, target)` | One verification round for a command sent at `since` (millis). |
-| `all_confirmed(since, target)` | Every bulb reported the target since `since`. |
-| `unconfirmed_list(since, target)` | Addresses still not confirmed, for logs. |
-| `any_fresh(since)`, `all_fresh(since)` | Some / every bulb answered since `since`, e.g. after power-up. |
-| `online_count(max_age_ms)` | How many bulbs answered recently. |
-| `group(max_age_ms)` | Combined view: on if any bulb is on, attributes of the first lit one, and its scene. |
-| `take_snapshot()`, `restore_round(since)` | Save every bulb's state and restore it with verification, e.g. around a measurement. |
+| `begin_command(target, window_ms)` | Send a target to every bulb at once and start verifying it. |
+| `command_step()` | One verification round: resends to bulbs in the wrong state and asks unconfirmed ones again. Returns true while the command is still pending; call it every ~250 ms, e.g. as a `while:` condition. |
+| `command_confirmed()`, `command_unconfirmed()`, `command_age()` | Outcome of the current command: confirmed by every bulb, addresses still missing, ms since it was sent. |
+| `target_off()`, `target_on(brightness, color, r, g, b, mireds)` | Build a target (ESPHome light units: 0..1 and mireds). |
+| `target_from(light)` | Target from a light's current state, including its active scene effect. |
+| `sync_light(light, relay_on)` | Mirror the bulbs into a light (quietly), e.g. after changes from the WiZ app. Returns true if it changed the light. |
+| `perform_quietly(call)`, `quiet()` | Run a LightCall marked as internal. Gate your on_state logic with `if (!wiz_udp::quiet())` so internal updates don't loop back as commands. |
+| `get_pilot_all()` | Ask every bulb for its state. |
+| `online_count(max_age_ms)`, `any_fresh(since)`, `all_fresh(since)` | How many bulbs answered recently; whether some/all answered since a time (e.g. after power-up). |
+| `group(max_age_ms)` | Combined view: on if any bulb is on, plus the first lit bulb's brightness, colour or scene. |
+| `take_snapshot()`, `restore_round(since)` | Save every bulb's state and put it back with verification, e.g. around a measurement. |
+| `set_ips(str)`, `send_all(msg)`, `pilot(target)`, `verify_round(since, target)`, `all_confirmed(since, target)` | Lower-level building blocks. |
+
+### Why `perform_quietly`
+
+ESPHome fires a light's `on_state` synchronously inside `perform()`. If your
+`on_state` runs a `mode: restart` script, and that script changes the light
+again (or sync does), the nested call restarts the script and **kills the run
+that was in progress**. Marking internal changes as quiet, and skipping them
+in `on_state`, avoids that entirely.
 
 ## Scenes
 
-`wiz_udp::SCENES` lists WiZ scenes 1–36 and 40 (Ocean, Romance, Sunset, Party,
-Fireplace, Cozy, Forest, Pastel colors, Wake-up, Bedtime, Warm white,
-Daylight, Cool white, Night light, Focus, Relax, True colors, TV time,
-Plantgrowth, Spring, Summer, Fall, Deep dive, Jungle, Mojito, Club,
-Christmas, Halloween, Candlelight, Golden white, Pulse, Steampunk, Diwali,
-White, Alarm, Snowy sky, Dim-to-warm). Declare your light's `effects:` in
-**that order**, named in any language. Effect *n* maps to `SCENES[n-1]`,
-through `scene_for_effect()` and `effect_for_scene()`.
+WiZ scenes 1–36 and 40 by default (Ocean, Romance, Sunset, Party, Fireplace,
+Cozy, Forest, Pastel colors, Wake-up, Bedtime, Warm white, Daylight, Cool
+white, Night light, Focus, Relax, True colors, TV time, Plantgrowth, Spring,
+Summer, Fall, Deep dive, Jungle, Mojito, Club, Christmas, Halloween,
+Candlelight, Golden white, Pulse, Steampunk, Diwali, White, Alarm, Snowy sky,
+Dim-to-warm). Rhythm (1000), custom (256+) and sync (201–204) scenes are left
+out.
 
-Note: bulbs powering up in plain warm white report scene 11 together with
-their temperature.
+Scene 11 ("Warm white") is also what a bulb reports in plain warm white, for
+example right after power-up. It's treated as white, not as a running scene.
+Picking it still sends the scene.
+
+A scene counts as confirmed when the bulb reports that scene at the sent
+brightness (±2). Wake-up, Bedtime, Pulse, Alarm and Dim-to-warm change their
+own brightness, so for them the scene id alone is enough. Resending a scene
+restarts its animation, so a check that never matches would show as
+flicker. Colours are compared as proportions, so bulbs that scale or round
+their channels still match.
+
+To leave a scene, set a colour or white temperature, or choose no effect.
+ESPHome keeps an effect running when a colour is set during it, so your
+`on_state` logic has to end it (see the example in this README's API notes).
+Setting exactly the colour the light already had before the scene changes
+nothing, so it can't be told apart from no change.
 
 ## Example
 
-[`example.yaml`](example.yaml) is a minimal relay device. It keeps the bulb
-list in a `text:` entity, counts the bulbs online, and has "all off" / "all
-on" buttons that send to every bulb and then verify for 3 s, logging any
-bulb that didn't confirm.
+[`example.yaml`](example.yaml) is a minimal relay device. The bulb list is a
+`text:` entity wired through `bulbs:`. It counts the bulbs online and has
+"all off" / "all on" buttons that use `begin_command` / `command_step`,
+logging any bulb that didn't confirm.
 
 ## Credits
 
