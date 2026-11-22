@@ -122,12 +122,12 @@ inline void set_ips(const std::string &s) {
 
 inline void poll();  // defined below
 
-// The ESP8266's WiFi transmit queue is tiny: UDP packets sent back to back
-// are dropped silently (in testing only the first of a burst of six went
-// out). So consecutive sends are spaced SEND_GAP_MS apart - about 25 ms for
-// six bulbs, still "at once" to the eye - and answers are drained while
-// waiting, because the core buffers only 4 unread packets. A send the stack
-// reports as failed is retried once.
+// Commands go out as fast as the ESP8266 allows. Its WiFi transmit queue is
+// tiny: UDP packets sent back to back are dropped silently (in testing only
+// the first of a burst of six went out). So consecutive sends are spaced
+// SEND_GAP_MS apart - about 25 ms for six bulbs, "at once" to the eye - and
+// answers are drained while waiting. A send the stack reports as failed is
+// retried once.
 static const uint32_t SEND_GAP_MS = 4;
 
 inline void send_to(const IPAddress &ip, const std::string &msg) {
@@ -153,8 +153,46 @@ inline void send_all(const std::string &msg) {
 
 static const char *const GET_PILOT = "{\"method\":\"getPilot\",\"params\":{}}";
 
-// Ask every bulb at once.
-inline void get_pilot_all() { send_all(GET_PILOT); }
+// --- Status queries: sequential, from the component's loop -------------------
+// Action commands go out in one fast sweep; status questions don't need to.
+// ask()/ask_all() only mark bulbs, and the component's loop sends one
+// getPilot every STATUS_GAP_MS, so answers arrive one by one (the ESP8266
+// core buffers only 4 unread packets) and never delay a command.
+static const uint32_t STATUS_GAP_MS = 60;
+
+inline uint32_t &ask_mask() {
+  static uint32_t m = 0;
+  return m;
+}
+inline void ask(size_t i) {
+  if (i < 32) ask_mask() |= (1u << i);
+}
+inline void ask_bulb(const IPAddress &ip) {
+  for (size_t i = 0; i < bulbs().size(); i++)
+    if (bulbs()[i].ip == ip) ask(i);
+}
+// Ask every bulb for its state (queued, one at a time).
+inline void get_pilot_all() {
+  for (size_t i = 0; i < bulbs().size(); i++) ask(i);
+}
+// Called from the loop: sends the next queued question if it's time.
+inline void ask_next() {
+  static uint32_t last = 0;
+  static size_t cursor = 0;
+  size_t n = bulbs().size();
+  ask_mask() &= (n >= 32) ? 0xFFFFFFFFu : ((1u << n) - 1);
+  if (ask_mask() == 0 || millis() - last < STATUS_GAP_MS) return;
+  for (size_t k = 0; k < n; k++) {
+    size_t i = (cursor + k) % n;
+    if (ask_mask() & (1u << i)) {
+      ask_mask() &= ~(1u << i);
+      cursor = i + 1;
+      last = millis();
+      send_to(bulbs()[i].ip, GET_PILOT);
+      return;
+    }
+  }
+}
 
 // Drain the socket; record getPilot answers per bulb. Call often (interval).
 inline void poll() {
@@ -307,15 +345,16 @@ inline bool all_confirmed(uint32_t since, const Target &t) {
   return true;
 }
 
-// One verification round, all at once: bulbs that answered (since `since`)
-// but don't match get the command again; every unconfirmed bulb is asked
-// again. A bulb that just came online is caught by its first answer.
+// One verification round: bulbs that answered (since `since`) but don't
+// match get the command again right away; every unconfirmed bulb is queued
+// to be asked again (sequentially). A bulb that just came online is caught
+// by its first answer.
 inline void verify_round(uint32_t since, const Target &t) {
   std::string cmd = pilot(t);
   for (auto &b : bulbs())
     if (fresh(b, since) && !matches(b, t)) send_to(b.ip, cmd);
-  for (auto &b : bulbs())
-    if (!confirmed(b, since, t)) send_to(b.ip, GET_PILOT);
+  for (size_t i = 0; i < bulbs().size(); i++)
+    if (!confirmed(bulbs()[i], since, t)) ask(i);
 }
 
 inline std::string unconfirmed_list(uint32_t since, const Target &t) {
@@ -373,7 +412,7 @@ inline bool restore_round(uint32_t since) {
     send_to(b.ip, pilot(snap[i]));
   }
   for (size_t i = 0; i < bulbs().size() && i < snap.size(); i++)
-    if (!(fresh(bulbs()[i], since) && matches(bulbs()[i], snap[i]))) send_to(bulbs()[i].ip, GET_PILOT);
+    if (!(fresh(bulbs()[i], since) && matches(bulbs()[i], snap[i]))) ask(i);
   return all;
 }
 
@@ -554,7 +593,9 @@ class WizUdp : public esphome::Component {
 #endif
   }
   void loop() override {
-    if (esphome::network::is_connected()) poll();
+    if (!esphome::network::is_connected()) return;
+    poll();
+    ask_next();
   }
   float get_setup_priority() const override { return esphome::setup_priority::AFTER_WIFI; }
 

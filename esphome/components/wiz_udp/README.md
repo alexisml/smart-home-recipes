@@ -49,11 +49,18 @@ ESP8266 (Arduino) only, as that's what it was tested on.
 - Bulbs are a runtime list of addresses (`set_ips("a.b.c.d, ...")`), up to
   16. Feed it from a `text:` entity so a moved or replaced bulb can be fixed
   without a rebuild.
-- **Send to all at once, then verify.** UDP drops packets, and weak-signal
-  bulbs miss commands often. In testing, one bulb needed six tries. So every
-  command goes to all bulbs back to back, and then *verification rounds*
-  (every ~250 ms) ask the unconfirmed bulbs again and resend the command to
-  any bulb that answers in the wrong state.
+- **Commands at once, status one by one.** Action commands (on, off,
+  colour, scene) go to every bulb in one fast sweep, 4 ms apart (about 25 ms
+  for six bulbs). That's the fastest the ESP8266 manages: packets sent back to
+  back are dropped silently, and in testing only the first of six went out.
+  Status questions (`getPilot`) are queued and sent one every 60 ms from the
+  component's loop, so answers arrive one by one. The core buffers only 4
+  unread packets.
+- **Verify and retry.** UDP drops packets, and weak-signal bulbs miss
+  commands often; in testing one bulb needed six tries. After a command,
+  verification rounds (every ~250 ms) resend the command to any bulb that
+  answers in the wrong state, and queue another question for every bulb not
+  yet confirmed.
 - A bulb counts as confirmed only when it reports the exact target: on/off,
   brightness (±1 %), white temperature (±50 K) or colour (±3), or the scene.
 
@@ -73,7 +80,7 @@ All in namespace `wiz_udp`, callable from any lambda.
 | `target_from(light)` | Target from a light's current state, including its active scene effect. |
 | `sync_light(light, relay_on)` | Mirror the bulbs into a light (quietly), e.g. after changes from the WiZ app. Returns true if it changed the light. |
 | `perform_quietly(call)`, `quiet()` | Run a LightCall marked as internal. Gate your on_state logic with `if (!wiz_udp::quiet())` so internal updates don't loop back as commands. |
-| `get_pilot_all()` | Ask every bulb for its state. |
+| `get_pilot_all()`, `ask(i)` | Queue a status question for every bulb / bulb *i*. Sent one at a time by the component's loop. |
 | `online_count(max_age_ms)`, `any_fresh(since)`, `all_fresh(since)` | How many bulbs answered recently; whether some/all answered since a time (e.g. after power-up). |
 | `group(max_age_ms)` | Combined view: on if any bulb is on, plus the first lit bulb's brightness, colour or scene. |
 | `take_snapshot()`, `restore_round(since)` | Save every bulb's state and put it back with verification, e.g. around a measurement. |
