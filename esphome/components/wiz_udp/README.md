@@ -71,7 +71,10 @@ subnet. Every packet to them is then dropped before it leaves, even though
 the bulb works fine from Home Assistant or a phone reaching it through a
 router. `status_text()` marks such bulbs with `?`. Fix: list them as
 `ip@mac` (`192.168.1.50@a8bb50aabbcc`; colons allowed). The component then
-feeds lwIP that bulb's ARP answer itself before sending. A bulb's MAC is in
+feeds lwIP that bulb's ARP answer itself before sending. It also sends
+the bulb a unicast ARP reply with the ESP's own MAC every minute, because
+the bulb's broadcast question for it doesn't get through either, and without
+it the answers never come back. A bulb's MAC is in
 its `getPilot` answer, its label, or your router.
 
 Works with bulbs that accept unsigned `setPilot`. Newer firmware that
@@ -95,7 +98,7 @@ All in namespace `wiz_udp`, callable from any lambda.
 | `group(max_age_ms)` | Combined view: on if any bulb is on, plus the first lit bulb's brightness, colour or scene. |
 | `status_text()` | One-line diagnostics for a template text sensor: packets sent/failed, answers received/matched/from unknown addresses/unparseable, and seconds since each bulb last answered. |
 | `take_snapshot()`, `restore_round(since)` | Save every bulb's state and put it back with verification, e.g. around a measurement. |
-| `arp_known(ip)`, `arp_prime(bulb)` | Whether the ESP has resolved a bulb's MAC; feed lwIP the ARP answer of a bulb listed as `ip@mac`. |
+| `arp_known(ip)`, `arp_prime(bulb)`, `arp_announce(bulb)` | Whether the ESP has resolved a bulb's MAC; feed lwIP the ARP answer of a bulb listed as `ip@mac`; tell that bulb the ESP's MAC by unicast. |
 | `set_ips(str)`, `send_all(msg)`, `pilot(target)`, `verify_round(since, target)`, `all_confirmed(since, target)` | Lower-level building blocks. |
 
 ### Why `perform_quietly`

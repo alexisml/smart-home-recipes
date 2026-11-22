@@ -85,6 +85,7 @@ struct Bulb {
   uint8_t r = 0, g = 0, b = 0;
   bool has_mac = false;  // MAC given in the list (ip@mac)
   uint8_t mac[6] = {0};
+  uint32_t announced = 0;  // millis() of the last unicast ARP announcement to it
 };
 
 inline WiFiUDP &udp() {
@@ -164,7 +165,8 @@ inline void set_ips(const std::string &s) {
 // before it leaves - while hosts reaching them through a router work fine.
 // arp_known() shows whether the MAC is resolved; for bulbs listed as ip@mac,
 // arp_prime() feeds lwIP that bulb's ARP reply itself, so sends go out as
-// unicast straight away. (This core's lwIP has static ARP entries compiled
+// unicast straight away, and arp_announce() tells the bulb our MAC so its
+// answers come back. (This core's lwIP has static ARP entries compiled
 // out, so the entry is refreshed before sends instead.)
 
 inline bool arp_known(const IPAddress &ip) {
@@ -207,6 +209,43 @@ inline void arp_prime(const Bulb &b) {
   ethernet_input(p, nif);
 }
 
+// The other direction: the bulb must also know OUR MAC to answer, and its
+// broadcast "who has <our ip>?" doesn't reach us either. So tell it with a
+// unicast ARP reply sent straight to its MAC ("<our ip> is at <our mac>"),
+// refreshed every ARP_ANNOUNCE_MS (ARP caches expire).
+static const uint32_t ARP_ANNOUNCE_MS = 60000;
+
+inline void arp_announce(Bulb &b) {
+  struct netif *nif = netif_default;
+  if (!b.has_mac || nif == nullptr || nif->linkoutput == nullptr) return;
+  if (b.announced != 0 && millis() - b.announced < ARP_ANNOUNCE_MS) return;
+  struct pbuf *p = pbuf_alloc(PBUF_RAW, 42, PBUF_RAM);
+  if (p == nullptr) return;
+  uint8_t *f = (uint8_t *) p->payload;
+  memcpy(f, b.mac, 6);  // Ethernet: to the bulb, from us, type ARP
+  memcpy(f + 6, nif->hwaddr, 6);
+  f[12] = 0x08;
+  f[13] = 0x06;
+  uint8_t *a = f + 14;  // ARP reply: <our ip> is at <our mac>
+  a[0] = 0x00;
+  a[1] = 0x01;
+  a[2] = 0x08;
+  a[3] = 0x00;
+  a[4] = 6;
+  a[5] = 4;
+  a[6] = 0x00;
+  a[7] = 0x02;
+  memcpy(a + 8, nif->hwaddr, 6);
+  uint32_t sip = ip4_addr_get_u32(netif_ip4_addr(nif));
+  memcpy(a + 14, &sip, 4);
+  memcpy(a + 18, b.mac, 6);
+  uint32_t tip = (uint32_t) b.ip;
+  memcpy(a + 24, &tip, 4);
+  nif->linkoutput(nif, p);  // takes its own reference while sending
+  pbuf_free(p);
+  b.announced = millis();
+}
+
 // Counters for diagnostics (status_text()).
 struct Stats {
   uint32_t tx = 0, tx_fail = 0;              // packets sent / sends the stack refused
@@ -234,8 +273,11 @@ inline void send_to(const IPAddress &ip, const std::string &msg) {
     delay(1);  // lets the WiFi stack run
     poll();
   }
-  for (auto &b : bulbs())
-    if (b.ip == ip) arp_prime(b);
+  for (auto &b : bulbs()) {
+    if (!(b.ip == ip)) continue;
+    arp_prime(b);
+    arp_announce(b);
+  }
   for (int attempt = 0; attempt < 2; attempt++) {
     udp().beginPacket(ip, BULB_PORT);
     udp().write((const uint8_t *) msg.data(), msg.size());
