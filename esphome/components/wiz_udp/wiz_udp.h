@@ -210,10 +210,22 @@ inline void arp_prime(const Bulb &b) {
 }
 
 // The other direction: the bulb must also know OUR MAC to answer, and its
-// broadcast "who has <our ip>?" doesn't reach us either. So tell it with a
-// unicast ARP reply sent straight to its MAC ("<our ip> is at <our mac>"),
-// refreshed every ARP_ANNOUNCE_MS (ARP caches expire).
+// broadcast "who has <our ip>?" doesn't reach us either. A bulb learns the
+// asker's MAC from any ARP request addressed to it, so send it a real ARP
+// request ("who has <bulb ip>? tell <our ip>") - but unicast to its MAC,
+// which does get through. Its reply also gives lwIP a genuine entry.
+// Refreshed every ARP_ANNOUNCE_MS (ARP caches expire). An unsolicited ARP
+// reply was tried first and WiZ bulbs ignored it.
 static const uint32_t ARP_ANNOUNCE_MS = 60000;
+
+inline uint32_t &arp_sent() {
+  static uint32_t n = 0;
+  return n;
+}
+inline uint32_t &arp_failed() {
+  static uint32_t n = 0;
+  return n;
+}
 
 inline void arp_announce(Bulb &b) {
   struct netif *nif = netif_default;
@@ -225,7 +237,7 @@ inline void arp_announce(Bulb &b) {
   // the heap on the ESP8266 (crash in pbuf_free after transmit).
   struct pbuf *p = pbuf_alloc(PBUF_LINK, 28, PBUF_RAM);
   if (p == nullptr) return;
-  uint8_t *a = (uint8_t *) p->payload;  // ARP reply: <our ip> is at <our mac>
+  uint8_t *a = (uint8_t *) p->payload;  // ARP request: who has <bulb ip>? tell <our ip>
   a[0] = 0x00;
   a[1] = 0x01;  // Ethernet
   a[2] = 0x08;
@@ -233,17 +245,20 @@ inline void arp_announce(Bulb &b) {
   a[4] = 6;
   a[5] = 4;
   a[6] = 0x00;
-  a[7] = 0x02;  // reply
+  a[7] = 0x01;  // request
   memcpy(a + 8, nif->hwaddr, 6);
   uint32_t sip = ip4_addr_get_u32(netif_ip4_addr(nif));
   memcpy(a + 14, &sip, 4);
-  memcpy(a + 18, b.mac, 6);
+  memset(a + 18, 0, 6);
   uint32_t tip = (uint32_t) b.ip;
   memcpy(a + 24, &tip, 4);
   struct eth_addr src, dst;
   memcpy(src.addr, nif->hwaddr, 6);
-  memcpy(dst.addr, b.mac, 6);
-  ethernet_output(nif, p, &src, &dst, 0x0806);  // ETHTYPE_ARP
+  memcpy(dst.addr, b.mac, 6);  // unicast to the bulb
+  if (ethernet_output(nif, p, &src, &dst, 0x0806) == ERR_OK)  // ETHTYPE_ARP
+    arp_sent()++;
+  else
+    arp_failed()++;
   pbuf_free(p);
   b.announced = millis();
 }
@@ -396,9 +411,10 @@ inline void poll() {
 // "tx 120/0 rx 40 ok 40 unk 0 bad 0 | .35 2s .36 -?".
 inline std::string status_text() {
   auto &st = stats();
-  char head[96];
-  snprintf(head, sizeof(head), "tx %u/%u rx %u ok %u unk %u bad %u |", (unsigned) st.tx, (unsigned) st.tx_fail,
-           (unsigned) st.rx, (unsigned) st.rx_matched, (unsigned) st.rx_unknown, (unsigned) st.rx_bad);
+  char head[112];
+  snprintf(head, sizeof(head), "tx %u/%u rx %u ok %u unk %u bad %u arp %u/%u |", (unsigned) st.tx,
+           (unsigned) st.tx_fail, (unsigned) st.rx, (unsigned) st.rx_matched, (unsigned) st.rx_unknown,
+           (unsigned) st.rx_bad, (unsigned) arp_sent(), (unsigned) arp_failed());
   std::string out(head);
   uint32_t now = millis();
   for (auto &b : bulbs()) {
