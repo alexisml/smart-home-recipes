@@ -217,31 +217,33 @@ static const uint32_t ARP_ANNOUNCE_MS = 60000;
 
 inline void arp_announce(Bulb &b) {
   struct netif *nif = netif_default;
-  if (!b.has_mac || nif == nullptr || nif->linkoutput == nullptr) return;
+  if (!b.has_mac || nif == nullptr) return;
   if (b.announced != 0 && millis() - b.announced < ARP_ANNOUNCE_MS) return;
-  struct pbuf *p = pbuf_alloc(PBUF_RAW, 42, PBUF_RAM);
+  // Allocated like lwIP's own ARP packets (PBUF_LINK: headroom for the
+  // Ethernet header and whatever the WiFi driver prepends), and sent through
+  // ethernet_output(). A bare PBUF_RAW frame handed to linkoutput corrupted
+  // the heap on the ESP8266 (crash in pbuf_free after transmit).
+  struct pbuf *p = pbuf_alloc(PBUF_LINK, 28, PBUF_RAM);
   if (p == nullptr) return;
-  uint8_t *f = (uint8_t *) p->payload;
-  memcpy(f, b.mac, 6);  // Ethernet: to the bulb, from us, type ARP
-  memcpy(f + 6, nif->hwaddr, 6);
-  f[12] = 0x08;
-  f[13] = 0x06;
-  uint8_t *a = f + 14;  // ARP reply: <our ip> is at <our mac>
+  uint8_t *a = (uint8_t *) p->payload;  // ARP reply: <our ip> is at <our mac>
   a[0] = 0x00;
-  a[1] = 0x01;
+  a[1] = 0x01;  // Ethernet
   a[2] = 0x08;
-  a[3] = 0x00;
+  a[3] = 0x00;  // IPv4
   a[4] = 6;
   a[5] = 4;
   a[6] = 0x00;
-  a[7] = 0x02;
+  a[7] = 0x02;  // reply
   memcpy(a + 8, nif->hwaddr, 6);
   uint32_t sip = ip4_addr_get_u32(netif_ip4_addr(nif));
   memcpy(a + 14, &sip, 4);
   memcpy(a + 18, b.mac, 6);
   uint32_t tip = (uint32_t) b.ip;
   memcpy(a + 24, &tip, 4);
-  nif->linkoutput(nif, p);  // takes its own reference while sending
+  struct eth_addr src, dst;
+  memcpy(src.addr, nif->hwaddr, 6);
+  memcpy(dst.addr, b.mac, 6);
+  ethernet_output(nif, p, &src, &dst, 0x0806);  // ETHTYPE_ARP
   pbuf_free(p);
   b.announced = millis();
 }
