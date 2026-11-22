@@ -83,6 +83,7 @@ All in namespace `wiz_udp`, callable from any lambda.
 | `get_pilot_all()`, `ask(i)` | Queue a status question for every bulb / bulb *i*. Sent one at a time by the component's loop. |
 | `online_count(max_age_ms)`, `any_fresh(since)`, `all_fresh(since)` | How many bulbs answered recently; whether some/all answered since a time (e.g. after power-up). |
 | `group(max_age_ms)` | Combined view: on if any bulb is on, plus the first lit bulb's brightness, colour or scene. |
+| `status_text()` | One-line diagnostics for a template text sensor: packets sent/failed, answers received/matched/from unknown addresses/unparseable, and seconds since each bulb last answered. |
 | `take_snapshot()`, `restore_round(since)` | Save every bulb's state and put it back with verification, e.g. around a measurement. |
 | `set_ips(str)`, `send_all(msg)`, `pilot(target)`, `verify_round(since, target)`, `all_confirmed(since, target)` | Lower-level building blocks. |
 

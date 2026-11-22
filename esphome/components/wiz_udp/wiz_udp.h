@@ -120,6 +120,17 @@ inline void set_ips(const std::string &s) {
   ESP_LOGI(TAG, "%u bulb(s) configured", (unsigned) bulbs().size());
 }
 
+// Counters for diagnostics (status_text()).
+struct Stats {
+  uint32_t tx = 0, tx_fail = 0;              // packets sent / sends the stack refused
+  uint32_t rx = 0, rx_matched = 0;           // getPilot answers received / matched to a bulb
+  uint32_t rx_unknown = 0, rx_bad = 0;       // from an address not in the list / unparseable
+};
+inline Stats &stats() {
+  static Stats st;
+  return st;
+}
+
 inline void poll();  // defined below
 
 // Commands go out as fast as the ESP8266 allows. Its WiFi transmit queue is
@@ -139,7 +150,9 @@ inline void send_to(const IPAddress &ip, const std::string &msg) {
   for (int attempt = 0; attempt < 2; attempt++) {
     udp().beginPacket(ip, BULB_PORT);
     udp().write((const uint8_t *) msg.data(), msg.size());
+    stats().tx++;
     if (udp().endPacket()) break;
+    stats().tx_fail++;
     delay(5);
     poll();
   }
@@ -202,10 +215,13 @@ inline void poll() {
     if (n <= 0) continue;
     buf[n] = 0;
     if (strstr(buf, "\"getPilot\"") == nullptr) continue;  // setPilot acks etc.
+    stats().rx++;
     IPAddress from = udp().remoteIP();
+    bool known = false;
     for (auto &b : bulbs()) {
       if (!(b.ip == from)) continue;
-      esphome::json::parse_json(std::string(buf), [&b](JsonObject root) -> bool {
+      known = true;
+      bool ok = esphome::json::parse_json(std::string(buf), [&b](JsonObject root) -> bool {
         JsonObject r = root["result"];
         if (r.isNull()) return false;
         b.seen = millis();
@@ -230,8 +246,36 @@ inline void poll() {
         }
         return true;
       });
+      if (ok)
+        stats().rx_matched++;
+      else
+        stats().rx_bad++;
+    }
+    if (!known) {
+      stats().rx_unknown++;
+      ESP_LOGW(TAG, "answer from %s, which is not in the bulb list", from.toString().c_str());
     }
   }
+}
+
+// One-line diagnostics: traffic counters and, per bulb, seconds since its
+// last answer ("-" = never), e.g. "tx 120/0 rx 40 ok 40 unk 0 bad 0 | .35 2s .36 -".
+inline std::string status_text() {
+  auto &st = stats();
+  char head[96];
+  snprintf(head, sizeof(head), "tx %u/%u rx %u ok %u unk %u bad %u |", (unsigned) st.tx, (unsigned) st.tx_fail,
+           (unsigned) st.rx, (unsigned) st.rx_matched, (unsigned) st.rx_unknown, (unsigned) st.rx_bad);
+  std::string out(head);
+  uint32_t now = millis();
+  for (auto &b : bulbs()) {
+    char part[24];
+    if (b.seen == 0)
+      snprintf(part, sizeof(part), " .%u -", (unsigned) b.ip[3]);
+    else
+      snprintf(part, sizeof(part), " .%u %us", (unsigned) b.ip[3], (unsigned) ((now - b.seen) / 1000));
+    out += part;
+  }
+  return out;
 }
 
 // Answered getPilot at or after `since` (millis).
