@@ -120,13 +120,33 @@ inline void set_ips(const std::string &s) {
   ESP_LOGI(TAG, "%u bulb(s) configured", (unsigned) bulbs().size());
 }
 
+inline void poll();  // defined below
+
+// The ESP8266's WiFi transmit queue is tiny: UDP packets sent back to back
+// are dropped silently (in testing only the first of a burst of six went
+// out). So consecutive sends are spaced SEND_GAP_MS apart - about 25 ms for
+// six bulbs, still "at once" to the eye - and answers are drained while
+// waiting, because the core buffers only 4 unread packets. A send the stack
+// reports as failed is retried once.
+static const uint32_t SEND_GAP_MS = 4;
+
 inline void send_to(const IPAddress &ip, const std::string &msg) {
-  udp().beginPacket(ip, BULB_PORT);
-  udp().write((const uint8_t *) msg.data(), msg.size());
-  udp().endPacket();
+  static uint32_t last = 0;
+  while (millis() - last < SEND_GAP_MS) {
+    delay(1);  // lets the WiFi stack run
+    poll();
+  }
+  for (int attempt = 0; attempt < 2; attempt++) {
+    udp().beginPacket(ip, BULB_PORT);
+    udp().write((const uint8_t *) msg.data(), msg.size());
+    if (udp().endPacket()) break;
+    delay(5);
+    poll();
+  }
+  last = millis();
 }
 
-// Same command to every bulb back to back, so they change together.
+// Same command to every bulb in one quick sweep, so they change together.
 inline void send_all(const std::string &msg) {
   for (auto &b : bulbs()) send_to(b.ip, msg);
 }
