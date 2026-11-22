@@ -20,6 +20,7 @@
 #include "lwip/etharp.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
+#include "netif/ethernet.h"
 #ifdef USE_TEXT
 #include "esphome/components/text/text.h"
 #endif
@@ -178,7 +179,7 @@ inline bool arp_known(const IPAddress &ip) {
 
 inline void arp_prime(const Bulb &b) {
   struct netif *nif = netif_default;
-  if (!b.has_mac || nif == nullptr || nif->input == nullptr || arp_known(b.ip)) return;
+  if (!b.has_mac || nif == nullptr || arp_known(b.ip)) return;
   struct pbuf *p = pbuf_alloc(PBUF_RAW, 42, PBUF_RAM);
   if (p == nullptr) return;
   uint8_t *f = (uint8_t *) p->payload;
@@ -201,7 +202,9 @@ inline void arp_prime(const Bulb &b) {
   memcpy(a + 18, nif->hwaddr, 6);
   uint32_t tip = ip4_addr_get_u32(netif_ip4_addr(nif));
   memcpy(a + 24, &tip, 4);
-  if (nif->input(p, nif) != ERR_OK) pbuf_free(p);
+  // Straight into lwIP's Ethernet input, as the ESP8266 glue does for every
+  // received frame (netif->input is a stub there). It takes the pbuf.
+  ethernet_input(p, nif);
 }
 
 // Counters for diagnostics (status_text()).
