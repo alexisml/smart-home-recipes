@@ -10,9 +10,11 @@ bulbs. A wall-switch click or a light entity on the relay device should
 switch the bulbs **in software** (soft off), keeping them powered and
 reachable, and cut the relay only as a fallback.
 
-> **Experimental.** Running on one ESP8266 (Shelly 2.5) with six WiZ bulbs
-> of two generations: commands, status polling and the ARP workaround are
-> verified there; scenes, sync from the WiZ app and calibration are not yet.
+> **Experimental, but running.** Tested on one ESP8266 (a Shelly 2.5)
+> driving six WiZ bulbs of two generations: on/off, brightness, white,
+> colour, scenes, sync of changes made from outside, and the ARP workaround.
+> Commands confirm in about 0.7 s, or about 10 s from power-up. Other
+> setups are untested.
 
 ## Install
 
@@ -58,11 +60,13 @@ ESP8266 (Arduino) only, as that's what it was tested on.
   unread packets.
 - **Verify and retry.** UDP drops packets, and weak-signal bulbs miss
   commands often; in testing one bulb needed six tries. After a command,
-  verification rounds (every ~250 ms) resend the command to every bulb not
-  yet confirmed, including silent ones, since a bulb can get commands while
-  its answers are lost. Each resend is preceded by a fresh unicast ARP request,
-  and another question is queued. Silent bulbs get a scene at most about
-  once a second, because resending a scene restarts its animation.
+  verification rounds run every ~250 ms. A bulb answering in the wrong state
+  gets the command again at once. A silent bulb (booting, or receiving
+  commands while its answers are lost) gets it about once a second, each
+  time after a fresh unicast ARP request. That's enough for a lost command,
+  without flooding the ESP8266's small transmit queue or restarting a scene
+  four times a second. Every unconfirmed bulb is also queued to be asked
+  again.
 - A bulb counts as confirmed only when it reports the exact target: on/off,
   brightness (±1 %), white temperature (±50 K) or colour (±3), or the scene.
 

@@ -548,24 +548,25 @@ inline bool all_confirmed(uint32_t since, const Target &t) {
   return true;
 }
 
-// One verification round: every bulb not yet confirmed gets the command
-// again (silent ones too - a lost command plus a lost answer would otherwise
-// never be retried), preceded by a fresh unicast ARP request, and is queued
-// to be asked again. Commands are idempotent; only a scene restarts its
-// animation, and only on a bulb that hasn't confirmed it.
+// One verification round. A bulb that answers in the wrong state gets the
+// command again right away. A silent bulb (no answer since the command) may
+// be booting, or getting commands while its answers are lost, so it gets the
+// command again - preceded by a fresh unicast ARP request - only every 4th
+// round (about once a second): enough for a lost command, without flooding
+// the ESP8266's small transmit queue or restarting a scene's animation 4x a
+// second. Every unconfirmed bulb is also queued to be asked again.
 inline void verify_round(uint32_t since, const Target &t) {
   std::string cmd = pilot(t);
-  // A silent bulb may be getting the commands but losing its answers, so
-  // for scenes (resend = animation restart) retry silent bulbs only every
-  // 4th round, about once a second.
   static uint32_t round = 0;
   round++;
   for (auto &b : bulbs()) {
     if (confirmed(b, since, t)) continue;
-    bool silent = !fresh(b, since);
-    if (silent && t.scene > 0 && round % 4 != 0) continue;
-    arp_announce(b, true);
-    send_to(b.ip, cmd);
+    if (fresh(b, since)) {
+      send_to(b.ip, cmd);  // answering, wrong state
+    } else if (round % 4 == 0) {
+      arp_announce(b, true);  // silent
+      send_to(b.ip, cmd);
+    }
   }
   for (size_t i = 0; i < bulbs().size(); i++)
     if (!confirmed(bulbs()[i], since, t)) ask(i);
