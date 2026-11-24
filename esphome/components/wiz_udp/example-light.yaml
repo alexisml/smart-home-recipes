@@ -1,0 +1,358 @@
+# ==========================================================================
+# Example: one relay powers a group of WiZ bulbs, shown as ONE light
+#
+# The device exposes a virtual RGB + white light ("Lights") that stands for
+# every bulb behind its relay. Change it from Home Assistant, the web page or
+# the wall switch, and the device does the rest over local UDP:
+#
+# - On / brightness / colour / white / scene: sent to every bulb at once,
+#   then verified and retried until each bulb reports it. The relay is
+#   switched on first if needed; bulbs still booting get it as they answer.
+# - Off: a soft off. The bulbs switch off in software and stay powered and
+#   reachable. If any bulb doesn't confirm, the relay is cut instead.
+# - WiZ scenes appear as the light's effects. Picking a colour ends a scene.
+# - Changes made elsewhere (WiZ app, Home Assistant's WiZ integration) are
+#   mirrored back into the light every 3 s.
+# - Double click on the wall switch: toggle the relay (hard power).
+#
+# Pins are for a Shelly 1 (relay GPIO4, switch input GPIO5); change them in
+# the substitutions for other boards.
+#
+# Full docs: https://github.com/alexisml/smart-home-recipes/tree/main/esphome/components/wiz_udp
+# ==========================================================================
+
+substitutions:
+  name: wiz-relay
+  friendly_name: WiZ Relay
+  relay_pin: GPIO4
+  switch_pin: GPIO5
+  # Bulbs need a few seconds after power-up before they answer. Commands
+  # keep being retried for this long after the relay goes on.
+  boot_window_ms: "20000"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // Start from the bulbs' own power-on look (warm white, 100 %),
+          // not ESPHome's default colour. Quiet: nothing is sent.
+          auto call = id(lights).make_call();
+          call.set_state(false);
+          call.set_color_mode(light::ColorMode::COLOR_TEMPERATURE);
+          call.set_color_temperature(1000000.0f / 2700.0f);
+          call.set_brightness(1.0f);
+          wiz_udp::perform_quietly(call);
+          id(boot_done) = true;
+
+esp8266:
+  # This config builds to ~456 KB (ESPHome 2026.11). A 1 MB board has room
+  # for OTA with little to spare; drop web_server if a build gets too big.
+  board: esp01_1m
+  restore_from_flash: true
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+
+ota:
+  - platform: esphome
+
+web_server:
+  port: 80
+  version: 2
+  local: true
+
+external_components:
+  - source: github://alexisml/smart-home-recipes@main
+    components: [wiz_udp]
+    refresh: 1d
+
+wiz_udp:
+  bulbs: wiz_ips
+  # The WiZ scenes become this light's effects (English names by default;
+  # add `scenes:` to rename or pick a subset).
+  light: lights
+
+text:
+  - platform: template
+    name: "WiZ bulbs"
+    id: wiz_ips
+    entity_category: config
+    mode: text
+    optimistic: true
+    restore_value: true
+    max_length: 255
+    # "ip" or "ip@mac". Add @mac for bulbs that never answer this device
+    # (see "Bulbs that don't answer this device" in the README).
+    initial_value: "192.168.1.50,192.168.1.51@a8bb50aabbcc"
+
+# --------------------------------------------------------------------------
+# The virtual light: template outputs that drive nothing. Its state is what
+# the script below sends to the bulbs.
+# --------------------------------------------------------------------------
+
+output:
+  - platform: template
+    id: v_red
+    type: float
+    write_action:
+      - lambda: '(void) state;'
+  - platform: template
+    id: v_green
+    type: float
+    write_action:
+      - lambda: '(void) state;'
+  - platform: template
+    id: v_blue
+    type: float
+    write_action:
+      - lambda: '(void) state;'
+  - platform: template
+    id: v_ct
+    type: float
+    write_action:
+      - lambda: '(void) state;'
+  - platform: template
+    id: v_white
+    type: float
+    write_action:
+      - lambda: '(void) state;'
+
+light:
+  - platform: rgbct
+    name: "Lights"
+    id: lights
+    red: v_red
+    green: v_green
+    blue: v_blue
+    color_temperature: v_ct
+    white_brightness: v_white
+    cold_white_color_temperature: 6500 K
+    warm_white_color_temperature: 2200 K
+    color_interlock: true
+    gamma_correct: 1.0
+    # The bulbs fade by themselves; a transition here would send every step.
+    default_transition_length: 0s
+    restore_mode: ALWAYS_OFF
+    on_state:
+      # Remember the last colour and effect, to tell "picked a colour during
+      # a scene" (ends the scene) from "changed brightness" (keeps it).
+      - lambda: |-
+          auto &v = id(lights).remote_values;
+          uint8_t mode = (uint8_t) v.get_color_mode();
+          uint32_t eff = id(lights).get_current_effect_index();
+          id(color_changed) = eff != 0 && eff == id(prev_effect) &&
+                              (mode != id(prev_mode) || fabsf(v.get_red() - id(prev_r)) > 0.01f ||
+                               fabsf(v.get_green() - id(prev_g)) > 0.01f || fabsf(v.get_blue() - id(prev_b)) > 0.01f ||
+                               fabsf(v.get_color_temperature() - id(prev_ct)) > 1.0f);
+          id(prev_mode) = mode;
+          id(prev_r) = v.get_red();
+          id(prev_g) = v.get_green();
+          id(prev_b) = v.get_blue();
+          id(prev_ct) = v.get_color_temperature();
+          id(prev_effect) = eff;
+      # Internal updates (sync from the bulbs, relay mirroring) are quiet and
+      # must not loop back as commands.
+      - if:
+          condition:
+            lambda: 'return !wiz_udp::quiet();'
+          then:
+            - script.execute: apply
+
+switch:
+  - platform: gpio
+    name: "Relay"
+    id: relay
+    pin: ${relay_pin}
+    entity_category: config
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - lambda: 'id(relay_on_at) = millis();'
+    on_turn_off:
+      # Power is gone: show the light as off.
+      - lambda: |-
+          if (id(boot_done) && id(lights).remote_values.is_on()) {
+            auto call = id(lights).turn_off();
+            wiz_udp::perform_quietly(call);
+          }
+
+binary_sensor:
+  - platform: gpio
+    name: "Wall switch"
+    id: wall_switch
+    pin: ${switch_pin}
+    filters:
+      - delayed_on_off: 50ms
+    on_multi_click:
+      # Single click: toggle the light (soft).
+      - timing:
+          - ON for at most 0.5s
+          - OFF for at least 0.3s
+        then:
+          - light.toggle: lights
+      # Double click: toggle the relay (hard power).
+      - timing:
+          - ON for at most 0.5s
+          - OFF for at most 0.3s
+          - ON for at most 0.5s
+          - OFF for at least 0.2s
+        then:
+          - switch.toggle: relay
+
+globals:
+  - id: boot_done
+    type: bool
+    initial_value: 'false'
+  # A command is being sent and verified: don't mirror bulb answers meanwhile.
+  - id: busy
+    type: bool
+    initial_value: 'false'
+  - id: relay_on_at
+    type: uint32_t
+    initial_value: '0'
+  - id: prev_mode
+    type: uint8_t
+    initial_value: '0'
+  - id: prev_r
+    type: float
+    initial_value: '0'
+  - id: prev_g
+    type: float
+    initial_value: '0'
+  - id: prev_b
+    type: float
+    initial_value: '0'
+  - id: prev_ct
+    type: float
+    initial_value: '0'
+  - id: prev_effect
+    type: uint32_t
+    initial_value: '0'
+  - id: color_changed
+    type: bool
+    initial_value: 'false'
+
+interval:
+  # Ask every bulb for its state (sent one by one by the component), and
+  # mirror the answers into the light, unless a command was just sent.
+  - interval: 3s
+    then:
+      - lambda: |-
+          if (!id(boot_done) || id(busy) || !network::is_connected()) return;
+          if (id(relay).state) wiz_udp::get_pilot_all();
+          if (wiz_udp::command_age() < 4000) return;
+          wiz_udp::sync_light(id(lights), id(relay).state);
+
+script:
+  # A user changed the light: on -> soft_on, off -> soft_off.
+  - id: apply
+    mode: restart
+    then:
+      - lambda: |-
+          if (!id(boot_done)) return;
+          // A colour picked during a scene ends the scene (quietly, so this
+          // run isn't restarted). Brightness alone keeps it.
+          if (id(color_changed) && id(lights).remote_values.is_on()) {
+            auto call = id(lights).make_call();
+            call.set_effect("None");
+            wiz_udp::perform_quietly(call);
+          }
+      - if:
+          condition:
+            lambda: 'return id(lights).remote_values.is_on();'
+          then:
+            - script.execute: soft_on
+          else:
+            - if:
+                condition:
+                  switch.is_on: relay
+                then:
+                  - script.execute: soft_off
+
+  # Relay on if needed, then the light's state to every bulb at once and a
+  # verification round every 250 ms: 3 s normally, longer right after the
+  # relay went on while the bulbs boot.
+  - id: soft_on
+    mode: restart
+    then:
+      - script.stop: soft_off
+      - lambda: 'id(busy) = true;'
+      - if:
+          condition:
+            switch.is_off: relay
+          then:
+            - switch.turn_on: relay
+      - lambda: |-
+          uint32_t since_on = millis() - id(relay_on_at);
+          uint32_t window = since_on < ${boot_window_ms} ? ${boot_window_ms} - since_on : 3000;
+          wiz_udp::begin_command(wiz_udp::target_from(id(lights)), std::max<uint32_t>(window, 3000));
+      - delay: 150ms
+      - while:
+          condition:
+            lambda: 'return id(relay).state && wiz_udp::command_step();'
+          then:
+            - delay: 250ms
+      - lambda: |-
+          if (wiz_udp::command_confirmed())
+            ESP_LOGI("wiz", "on: all bulbs confirmed (%u ms)", (unsigned) wiz_udp::command_age());
+          else if (id(relay).state)
+            ESP_LOGW("wiz", "on: not confirmed by %s", wiz_udp::command_unconfirmed().c_str());
+          id(busy) = false;
+
+  # Off while the bulbs are still booting: just cut the relay. Otherwise off
+  # to every bulb at once, verify for 3 s, and cut the relay if any bulb
+  # didn't confirm (the fallback).
+  - id: soft_off
+    mode: restart
+    then:
+      - script.stop: soft_on
+      - if:
+          condition:
+            lambda: |-
+              return millis() - id(relay_on_at) < ${boot_window_ms} &&
+                     !wiz_udp::all_fresh(id(relay_on_at));
+          then:
+            - switch.turn_off: relay
+            - lambda: 'id(busy) = false;'
+          else:
+            - lambda: |-
+                id(busy) = true;
+                wiz_udp::begin_command(wiz_udp::target_off(), 3000);
+            - delay: 150ms
+            - while:
+                condition:
+                  lambda: 'return id(relay).state && wiz_udp::command_step();'
+                then:
+                  - delay: 250ms
+            - if:
+                condition:
+                  lambda: |-
+                    if (wiz_udp::command_confirmed()) return false;
+                    ESP_LOGW("wiz", "off: not confirmed by %s -> cutting relay",
+                             wiz_udp::command_unconfirmed().c_str());
+                    return id(relay).state;
+                then:
+                  - switch.turn_off: relay
+            - lambda: 'id(busy) = false;'
+
+sensor:
+  - platform: template
+    name: "WiZ bulbs online"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: 'return wiz_udp::online_count(10000);'
+
+text_sensor:
+  - platform: template
+    name: "WiZ diagnostics"
+    entity_category: diagnostic
+    update_interval: 30s
+    lambda: 'return wiz_udp::status_text();'

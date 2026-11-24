@@ -33,7 +33,7 @@ C++ helpers loaded with `external_components`, for things YAML alone can't do.
 
 | Component | For | What it adds |
 |---|---|---|
-| [`wiz_udp`](esphome/components/wiz_udp/) | ESP8266 devices that switch WiZ bulbs | Local UDP control of WiZ bulbs from lambdas: send to all at once, verify and retry, scenes, state polling. **Experimental.** |
+| [`wiz_udp`](esphome/components/wiz_udp/) | ESP8266 devices that switch WiZ bulbs | Local UDP control of WiZ bulbs from lambdas: send to all at once, verify and retry, scenes, state polling. [Example](esphome/components/wiz_udp/example-light.yaml): the bulbs behind a relay as one light, with soft off and relay fallback. **Experimental.** |
 
 ```yaml
 external_components:

@@ -142,16 +142,21 @@ their channels still match.
 
 To leave a scene, set a colour or white temperature, or choose no effect.
 ESPHome keeps an effect running when a colour is set during it, so your
-`on_state` logic has to end it (see the example in this README's API notes).
+`on_state` logic has to end it (`example-light.yaml` shows how).
 Setting exactly the colour the light already had before the scene changes
 nothing, so it can't be told apart from no change.
 
-## Example
+## Examples
 
-[`example.yaml`](example.yaml) is a minimal relay device. The bulb list is a
-`text:` entity wired through `bulbs:`. It counts the bulbs online and has
-"all off" / "all on" buttons that use `begin_command` / `command_step`,
-logging any bulb that didn't confirm.
+- [`example-light.yaml`](example-light.yaml): **the full use case.** One
+  relay powers a group of bulbs, shown as a single RGB + white light with
+  the WiZ scenes as effects. Changes go to every bulb at once and are
+  verified; off is a soft off with the relay cut as fallback; the wall
+  switch toggles the light, a double click the relay; changes made from the
+  WiZ app or Home Assistant are mirrored back. Pins for a Shelly 1.
+- [`example.yaml`](example.yaml): the minimum. A bulb list, a count of
+  bulbs online, and "all on" / "all off" buttons using `begin_command` /
+  `command_step`.
 
 ## Credits
 
