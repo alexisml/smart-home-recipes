@@ -45,7 +45,7 @@ PCB silkscreen: **`SH_07X_DS_1348C50_V1`**.
 | Ref | Part | Notes |
 |---|---|---|
 | U15 | **Tuya CB3S** Wi-Fi module (Beken **BK7231N**) | ![CB3S module](wifi-module.jpg) |
-| U14 | **Nations N32G4-series MCU**, LQFP-48 | A separate microcontroller next to the Wi-Fi module. Exact part number *unconfirmed* (marking hard to read). |
+| U14 | **Nations N32G452CCL7** MCU (Arm Cortex-M4F), LQFP-48 | A separate microcontroller next to the Wi-Fi module. Marking: `N32G452 / CCL7 / TBD48002` (the last line looks like a lot code). |
 | U13 + X1 + BT1 | SOIC-8 chip, 32.768 kHz-style crystal, coin cell holder | Looks like a **battery-backed real-time clock**, so the MCU can keep time and schedules without Wi-Fi. *Unconfirmed.* |
 | U5–U12 | **8 × ST T405Q-600** triacs | One per zone, 4 A / 600 V. Plenty of margin for a 0.3 A valve. |
 | S1–S3 | Tactile buttons | Pressed by the front pad |
