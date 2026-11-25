@@ -7,9 +7,15 @@ checked with a meter or a datasheet.
 
 ## The product
 
-- Sold as **Gadnic RIEGAUT6** ("Programador de riego"). The same white and grey
-  case, with a black LED strip and a round three-button pad, is sold under
-  other names as a generic "Tuya 8-zone sprinkler controller".
+- Sold as **Gadnic RIEGAUT6** ("Programador de riego"). The board is silkscreened
+  `SH_07X`, which matches an OEM controller sold as **SH-07X**: for example
+  Diivoo SH-07X ([eBay](https://www.ebay.com/itm/394978566224)) and Forrinx
+  SH-07-X ([Made-in-China](https://www.made-in-china.com/showroom/doreen-ssg/product-detailIvbEukoOrdWn/China-Forrinx-Sh-07-X-APP-Water-Valve-Timer-Control-Alexa-Google-Home-Voice-Control-WiFi-Sprinkler-Controller.html)).
+  The screenshots in the Gadnic manual come from a Forrinx account. An
+  **SH-07X PRO** variant adds master valve and rain/freeze sensor terminals
+  ([manual](https://manuals.plus/yangguang/sh-07x-pro-smart-wifi-sprinkler-controller-manual),
+  FCC ID 2AR3P-SH-07XPRO, Shenzhen Shenan Yangguang Electronics). The same case
+  is also sold under other names as a generic "Tuya 8-zone sprinkler controller".
 - Manual (Spanish, PDF):
   [gadnic.com.ar/descargas/RIEGAUT6.pdf](https://www.gadnic.com.ar/descargas/RIEGAUT6.pdf)
 - **Stock app:** Smart Life / Tuya. It pairs as "Smart Watering Timer" and needs
@@ -68,7 +74,23 @@ registers. Here a separate MCU (with what looks like its own clock) sits between
 the Wi-Fi module and the triacs.
 
 That points to a **TuyaMCU** design: the CB3S only talks serial to the MCU, and
-the MCU runs the zones, buttons, LEDs and buzzer. If so, the plan is:
+the MCU runs the zones, buttons, LEDs and buzzer.
+
+A matching board is documented on Elektroda:
+[4/6/8 channel WiFi Smart Garden irrigation controller with TuyaMCU](https://www.elektroda.com/rtvforum/topic3991977.html)
+(July 2023, the 4-channel version). It has the same **CB3S + Nations N32G452**
+pair, and reports:
+
+- **Zones are TuyaMCU dpIDs 101, 102, 103, 104** on the 4-channel unit, found
+  with [TuyaMCU Analyzer](https://github.com/openshwprojects/TuyaMCUAnalyzer).
+  The 8-zone unit likely continues to 108. *Unconfirmed.*
+- The author **had to desolder the CB3S** and power it from an external 3.3 V
+  to flash it, because the MCU disturbed the UART. They resoldered it
+  afterwards.
+- They ran OpenBeken with the TuyaMCU driver, and added a 30-minute auto-off per
+  zone in case Wi-Fi or MQTT drops.
+
+The plan for ESPHome is:
 
 1. Back up the CB3S flash first, with
    [ltchiptool](https://github.com/libretiny-eu/ltchiptool) over UART.
@@ -80,9 +102,10 @@ the MCU runs the zones, buttons, LEDs and buzzer. If so, the plan is:
 
 Things to sort out before flashing:
 
-- **UART sharing.** On TuyaMCU boards the CB3S's flashing UART is often the same
-  one wired to the MCU, which can block flashing. Usual workarounds: hold the
-  MCU in reset, cut or lift its TX line, or take the module off the board.
+- **UART sharing.** The CB3S's flashing UART is wired to the MCU. On the
+  Elektroda unit this blocked flashing, and desoldering the module was what
+  worked. Holding the MCU in reset or lifting its TX line may avoid that.
+  *Untested here.*
 - **Power.** Run the board from its own 24 VAC adapter while flashing. Don't also
   feed 3.3 V from the USB adapter.
 - If the CB3S can't be flashed, a small ESP32-C3 board wired to its pads (3V3,
@@ -91,6 +114,10 @@ Things to sort out before flashing:
   Wi-Fi peaks.
 
 ## Credits
+
+- nkrt on Elektroda: the
+  [CB3S + N32G452 irrigation controller write-up](https://www.elektroda.com/rtvforum/topic3991977.html)
+  with dpIDs and flashing notes
 
 - [gnacho/esphome-tuya-8zone-valve](https://github.com/gnacho/esphome-tuya-8zone-valve):
   the TY-W-8L board this one turned out *not* to be, and a useful reference for
