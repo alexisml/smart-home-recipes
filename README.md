@@ -42,6 +42,14 @@ external_components:
     refresh: 1d
 ```
 
+### Teardowns
+
+Hardware notes for devices that don't have a package yet.
+
+| Device | What's there |
+|---|---|
+| [`gadnic-riegaut6`](esphome/devices/gadnic-riegaut6/) | 8-zone 24 VAC Wi-Fi irrigation controller (Tuya). Board photos, parts (CB3S + separate MCU, triac outputs), the stock manual, and a plan for ESPHome via TuyaMCU. **Not flashed yet.** |
+
 ## Conventions
 
 - **Features are switched with substitutions**, unquoted `true` / `false`.
